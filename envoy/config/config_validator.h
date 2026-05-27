@@ -69,6 +69,14 @@ public:
    * Returns the xDS service type url that the config validator expects to receive.
    */
   virtual std::string typeUrl() const PURE;
+
+  /**
+   * Returns the xDS service type url that the config validator expects to receive, using the
+   * validator's typed configuration when the extension's target type is configuration-dependent.
+   */
+  virtual std::string typeUrl(const Protobuf::Any&, ProtobufMessage::ValidationVisitor&) const {
+    return typeUrl();
+  }
 };
 
 } // namespace Config

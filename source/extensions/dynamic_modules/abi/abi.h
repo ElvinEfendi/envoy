@@ -44,7 +44,7 @@
 // SDK downstream users.
 // 2. In the future, after the stable ABI is established, we may want to decouple the ABI version
 // from Envoy's versioning scheme.
-#define ENVOY_DYNAMIC_MODULES_ABI_VERSION "v0.1.0"
+#define ENVOY_DYNAMIC_MODULES_ABI_VERSION "v0.2.0"
 
 #ifdef __cplusplus
 #include <cstdbool>
@@ -10686,6 +10686,157 @@ bool envoy_dynamic_module_callback_cert_validator_set_filter_state(
 bool envoy_dynamic_module_callback_cert_validator_get_filter_state(
     envoy_dynamic_module_type_cert_validator_config_envoy_ptr config_envoy_ptr,
     envoy_dynamic_module_type_module_buffer key, envoy_dynamic_module_type_envoy_buffer* value_out);
+
+// =============================================================================
+// =========================== Config Validator =================================
+// =============================================================================
+//
+// This extension enables xDS config validation via dynamic modules. The module receives the xDS
+// resource type URL and decoded resources serialized back to protobuf bytes. Returning false from a
+// validation hook rejects the xDS update and Envoy sends a normal xDS NACK.
+
+// =============================================================================
+// Config Validator Types
+// =============================================================================
+
+/**
+ * envoy_dynamic_module_type_config_validator_config_envoy_ptr is a pointer to the
+ * DynamicModuleConfigValidatorConfig object in Envoy. This is passed to the module during config
+ * creation and validation.
+ *
+ * OWNERSHIP: Envoy owns this object. The pointer remains stable until
+ * envoy_dynamic_module_on_config_validator_config_destroy returns for the corresponding in-module
+ * config.
+ */
+typedef void* envoy_dynamic_module_type_config_validator_config_envoy_ptr;
+
+/**
+ * envoy_dynamic_module_type_config_validator_config_module_ptr is a pointer to the in-module
+ * config validator configuration created and owned by the module.
+ *
+ * OWNERSHIP: Module owns this pointer.
+ */
+typedef const void* envoy_dynamic_module_type_config_validator_config_module_ptr;
+
+/**
+ * envoy_dynamic_module_type_config_validator_resource is a decoded xDS resource passed to a config
+ * validator.
+ *
+ * The name, version, and serialized_resource buffers are owned by Envoy and are valid only for the
+ * duration of the validation event hook call. Modules must copy any data they need to retain after
+ * returning from the hook.
+ */
+typedef struct envoy_dynamic_module_type_config_validator_resource {
+  // Resource name from Config::DecodedResource::name().
+  envoy_dynamic_module_type_envoy_buffer name;
+  // Resource version from Config::DecodedResource::version().
+  envoy_dynamic_module_type_envoy_buffer version;
+  // Serialized protobuf bytes for Config::DecodedResource::resource().
+  envoy_dynamic_module_type_envoy_buffer serialized_resource;
+} envoy_dynamic_module_type_config_validator_resource;
+
+// =============================================================================
+// Config Validator Event Hooks
+// =============================================================================
+
+/**
+ * envoy_dynamic_module_on_config_validator_config_new is called by the main thread when the config
+ * validator config is loaded.
+ *
+ * @param config_envoy_ptr is the pointer to the DynamicModuleConfigValidatorConfig object for the
+ * corresponding config.
+ * @param name is the extension name owned by Envoy and valid only for the duration of this call.
+ * @param config is the extension configuration bytes owned by Envoy and valid only for the
+ * duration of this call.
+ * @return a pointer to the in-module config validator configuration. Returning nullptr indicates a
+ * failure to initialize the module, and the Envoy configuration will be rejected.
+ */
+envoy_dynamic_module_type_config_validator_config_module_ptr
+envoy_dynamic_module_on_config_validator_config_new(
+    envoy_dynamic_module_type_config_validator_config_envoy_ptr config_envoy_ptr,
+    envoy_dynamic_module_type_envoy_buffer name, envoy_dynamic_module_type_envoy_buffer config);
+
+/**
+ * envoy_dynamic_module_on_config_validator_config_destroy is called when the config validator
+ * configuration is destroyed in Envoy. The module should release any resources associated with the
+ * in-module config validator configuration.
+ *
+ * @param config_module_ptr is a pointer to the in-module config validator configuration.
+ */
+void envoy_dynamic_module_on_config_validator_config_destroy(
+    envoy_dynamic_module_type_config_validator_config_module_ptr config_module_ptr);
+
+/**
+ * envoy_dynamic_module_on_config_validator_validate is called for State-of-the-World xDS updates
+ * before Envoy accepts the update.
+ *
+ * The resources array and all buffers referenced by the array are owned by Envoy and are valid only
+ * for the duration of this event hook call. Modules must copy any data they need to retain.
+ *
+ * @param config_envoy_ptr is the pointer to the DynamicModuleConfigValidatorConfig object.
+ * @param config_module_ptr is the pointer to the in-module config validator configuration.
+ * @param type_url is the xDS resource type URL for the update.
+ * @param resources is an array of decoded resources serialized as protobuf bytes.
+ * @param resources_count is the number of resources in the array.
+ * @return true if the update is accepted, false if the update is rejected. Rejection details may be
+ * set with envoy_dynamic_module_callback_config_validator_set_rejection_message before returning.
+ * If the rejection message is not set or is empty, Envoy uses a generic rejection message.
+ */
+bool envoy_dynamic_module_on_config_validator_validate(
+    envoy_dynamic_module_type_config_validator_config_envoy_ptr config_envoy_ptr,
+    envoy_dynamic_module_type_config_validator_config_module_ptr config_module_ptr,
+    envoy_dynamic_module_type_envoy_buffer type_url,
+    envoy_dynamic_module_type_config_validator_resource* resources, size_t resources_count);
+
+/**
+ * envoy_dynamic_module_on_config_validator_validate_delta is called for delta xDS updates before
+ * Envoy accepts the update.
+ *
+ * The added_resources array, removed_resources array, and all buffers referenced by these arrays
+ * are owned by Envoy and are valid only for the duration of this event hook call. Modules must copy
+ * any data they need to retain.
+ *
+ * @param config_envoy_ptr is the pointer to the DynamicModuleConfigValidatorConfig object.
+ * @param config_module_ptr is the pointer to the in-module config validator configuration.
+ * @param type_url is the xDS resource type URL for the update.
+ * @param added_resources is an array of added or modified decoded resources serialized as protobuf
+ * bytes.
+ * @param added_resources_count is the number of added or modified resources in the array.
+ * @param removed_resources is an array of removed resource names.
+ * @param removed_resources_count is the number of removed resource names in the array.
+ * @return true if the update is accepted, false if the update is rejected. Rejection details may be
+ * set with envoy_dynamic_module_callback_config_validator_set_rejection_message before returning.
+ * If the rejection message is not set or is empty, Envoy uses a generic rejection message.
+ */
+bool envoy_dynamic_module_on_config_validator_validate_delta(
+    envoy_dynamic_module_type_config_validator_config_envoy_ptr config_envoy_ptr,
+    envoy_dynamic_module_type_config_validator_config_module_ptr config_module_ptr,
+    envoy_dynamic_module_type_envoy_buffer type_url,
+    envoy_dynamic_module_type_config_validator_resource* added_resources,
+    size_t added_resources_count, envoy_dynamic_module_type_envoy_buffer* removed_resources,
+    size_t removed_resources_count);
+
+// =============================================================================
+// Config Validator Callbacks
+// =============================================================================
+
+/**
+ * envoy_dynamic_module_callback_config_validator_set_rejection_message is called by the module
+ * during a validation event hook to set the rejection message for a failed validation. Envoy copies
+ * the provided buffer immediately, so the module does not need to keep the buffer alive after this
+ * call returns.
+ *
+ * This must only be called from within a config validator validation event hook.
+ * Config validator validation hooks run on Envoy's main thread, so this callback must also be
+ * called on the main thread.
+ *
+ * @param config_envoy_ptr is the pointer to the DynamicModuleConfigValidatorConfig object.
+ * @param rejection_message is the rejection details string owned by the module.
+ * Empty messages are treated the same as not setting a rejection message.
+ */
+void envoy_dynamic_module_callback_config_validator_set_rejection_message(
+    envoy_dynamic_module_type_config_validator_config_envoy_ptr config_envoy_ptr,
+    envoy_dynamic_module_type_module_buffer rejection_message);
 
 // =============================================================================
 // ========================= Upstream HTTP TCP Bridge ===========================

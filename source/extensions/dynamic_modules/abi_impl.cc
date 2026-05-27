@@ -350,6 +350,17 @@ __attribute__((weak)) bool envoy_dynamic_module_callback_cert_validator_get_filt
   return false;
 }
 
+// ---------------------- Config Validator callbacks ------------------------
+// These are weak symbols that provide default stub implementations. The actual implementation
+// is provided in the config validator dynamic module extension when it is used.
+
+__attribute__((weak)) void envoy_dynamic_module_callback_config_validator_set_rejection_message(
+    envoy_dynamic_module_type_config_validator_config_envoy_ptr,
+    envoy_dynamic_module_type_module_buffer) {
+  IS_ENVOY_BUG("envoy_dynamic_module_callback_config_validator_set_rejection_message: "
+               "not implemented in this context");
+}
+
 // ---------------------- Bootstrap extension admin handler callbacks ------------------------
 // These are weak symbols that provide default stub implementations. The actual implementations
 // are provided in the bootstrap extension abi_impl.cc when the bootstrap extension is used.

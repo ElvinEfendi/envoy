@@ -266,6 +266,7 @@ envoy_cc_test(
     srcs = ["custom_config_validators_impl_test.cc"],
     rbe_pool = "6gig",
     deps = [
+        "//source/common/config:resource_name_lib",
         "//test/mocks/protobuf:protobuf_mocks",
         "//test/mocks/server:instance_mocks",
         "//test/test_common:registry_lib",
