@@ -22,6 +22,46 @@ namespace DynamicModules {
 namespace HttpFilters {
 namespace {
 
+Tracing::SpanKind spanKindFromAbi(envoy_dynamic_module_type_span_kind span_kind) {
+  switch (span_kind) {
+  case envoy_dynamic_module_type_span_kind_Internal:
+    return Tracing::SpanKind::Internal;
+  case envoy_dynamic_module_type_span_kind_Server:
+    return Tracing::SpanKind::Server;
+  case envoy_dynamic_module_type_span_kind_Client:
+    return Tracing::SpanKind::Client;
+  case envoy_dynamic_module_type_span_kind_Producer:
+    return Tracing::SpanKind::Producer;
+  case envoy_dynamic_module_type_span_kind_Consumer:
+    return Tracing::SpanKind::Consumer;
+  }
+  return Tracing::SpanKind::Internal;
+}
+
+class ChildSpanConfig : public Tracing::EgressConfigImpl {
+public:
+  explicit ChildSpanConfig(envoy_dynamic_module_type_span_kind span_kind)
+      : span_kind_(spanKindFromAbi(span_kind)) {}
+
+  Tracing::SpanKind spanKind() const override { return span_kind_; }
+
+private:
+  const Tracing::SpanKind span_kind_;
+};
+
+Tracing::SpanPtr createChildSpan(DynamicModuleHttpFilter& filter, Tracing::Span& parent_span,
+                                 envoy_dynamic_module_type_module_buffer operation_name,
+                                 envoy_dynamic_module_type_span_kind span_kind) {
+  auto* callbacks = filter.callbacks();
+  if (callbacks == nullptr) {
+    return nullptr;
+  }
+  const absl::string_view operation(operation_name.ptr, operation_name.length);
+  const ChildSpanConfig config(span_kind);
+  return parent_span.spawnChild(config, std::string(operation),
+                                callbacks->dispatcher().timeSource().systemTime());
+}
+
 void bodyBufferToModule(const Buffer::Instance& buffer,
                         envoy_dynamic_module_type_envoy_buffer* result_buffer_vector) {
   auto raw_slices = buffer.getRawSlices(std::nullopt);
@@ -2591,6 +2631,11 @@ bool envoy_dynamic_module_callback_http_span_get_span_id(
   return true;
 }
 
+bool envoy_dynamic_module_callback_http_span_is_recording(
+    envoy_dynamic_module_type_span_envoy_ptr span_ptr) {
+  return span_ptr != nullptr && static_cast<Tracing::Span*>(span_ptr)->exportedSpan();
+}
+
 envoy_dynamic_module_type_child_span_module_ptr envoy_dynamic_module_callback_http_span_spawn_child(
     envoy_dynamic_module_type_http_filter_envoy_ptr filter_envoy_ptr,
     envoy_dynamic_module_type_span_envoy_ptr span_ptr,
@@ -2626,6 +2671,52 @@ void envoy_dynamic_module_callback_http_child_span_finish(
   auto* span = static_cast<Tracing::Span*>(span_ptr);
   span->finishSpan();
   delete span;
+}
+
+envoy_dynamic_module_type_http_child_span_id envoy_dynamic_module_callback_http_span_create_child(
+    envoy_dynamic_module_type_http_filter_envoy_ptr filter_envoy_ptr,
+    envoy_dynamic_module_type_span_envoy_ptr parent_span_ptr,
+    envoy_dynamic_module_type_module_buffer operation_name,
+    envoy_dynamic_module_type_span_kind span_kind) {
+  if (filter_envoy_ptr == nullptr || parent_span_ptr == nullptr) {
+    return 0;
+  }
+  auto& filter = *static_cast<DynamicModuleHttpFilter*>(filter_envoy_ptr);
+  auto& parent_span = *static_cast<Tracing::Span*>(parent_span_ptr);
+  return filter.storeChildSpan(createChildSpan(filter, parent_span, operation_name, span_kind));
+}
+
+envoy_dynamic_module_type_http_child_span_id
+envoy_dynamic_module_callback_http_child_span_create_child(
+    envoy_dynamic_module_type_http_filter_envoy_ptr filter_envoy_ptr,
+    envoy_dynamic_module_type_http_child_span_id parent_span_id,
+    envoy_dynamic_module_type_module_buffer operation_name,
+    envoy_dynamic_module_type_span_kind span_kind) {
+  if (filter_envoy_ptr == nullptr) {
+    return 0;
+  }
+  auto& filter = *static_cast<DynamicModuleHttpFilter*>(filter_envoy_ptr);
+  Tracing::Span* parent_span = filter.childSpan(parent_span_id);
+  if (parent_span == nullptr) {
+    return 0;
+  }
+  return filter.storeChildSpan(createChildSpan(filter, *parent_span, operation_name, span_kind));
+}
+
+envoy_dynamic_module_type_span_envoy_ptr envoy_dynamic_module_callback_http_child_span_get(
+    envoy_dynamic_module_type_http_filter_envoy_ptr filter_envoy_ptr,
+    envoy_dynamic_module_type_http_child_span_id span_id) {
+  if (filter_envoy_ptr == nullptr) {
+    return nullptr;
+  }
+  return static_cast<DynamicModuleHttpFilter*>(filter_envoy_ptr)->childSpan(span_id);
+}
+
+bool envoy_dynamic_module_callback_http_child_span_finish_by_id(
+    envoy_dynamic_module_type_http_filter_envoy_ptr filter_envoy_ptr,
+    envoy_dynamic_module_type_http_child_span_id span_id) {
+  return filter_envoy_ptr != nullptr &&
+         static_cast<DynamicModuleHttpFilter*>(filter_envoy_ptr)->finishChildSpan(span_id);
 }
 
 // ------------------- Cluster/Upstream Information Callbacks -------------------------

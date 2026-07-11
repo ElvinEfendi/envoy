@@ -4615,6 +4615,13 @@ envoy_dynamic_module_callback_http_span_get_span_id(envoy_dynamic_module_type_sp
   return false;
 }
 
+__attribute__((weak)) bool
+envoy_dynamic_module_callback_http_span_is_recording(envoy_dynamic_module_type_span_envoy_ptr) {
+  IS_ENVOY_BUG(
+      "envoy_dynamic_module_callback_http_span_is_recording: not implemented in this context");
+  return false;
+}
+
 __attribute__((weak)) envoy_dynamic_module_type_child_span_module_ptr
 envoy_dynamic_module_callback_http_span_spawn_child(envoy_dynamic_module_type_http_filter_envoy_ptr,
                                                     envoy_dynamic_module_type_span_envoy_ptr,
@@ -4628,6 +4635,39 @@ __attribute__((weak)) void envoy_dynamic_module_callback_http_child_span_finish(
     envoy_dynamic_module_type_child_span_module_ptr) {
   IS_ENVOY_BUG(
       "envoy_dynamic_module_callback_http_child_span_finish: not implemented in this context");
+}
+
+__attribute__((weak)) envoy_dynamic_module_type_http_child_span_id
+envoy_dynamic_module_callback_http_span_create_child(
+    envoy_dynamic_module_type_http_filter_envoy_ptr, envoy_dynamic_module_type_span_envoy_ptr,
+    envoy_dynamic_module_type_module_buffer, envoy_dynamic_module_type_span_kind) {
+  IS_ENVOY_BUG(
+      "envoy_dynamic_module_callback_http_span_create_child: not implemented in this context");
+  return 0;
+}
+
+__attribute__((weak)) envoy_dynamic_module_type_http_child_span_id
+envoy_dynamic_module_callback_http_child_span_create_child(
+    envoy_dynamic_module_type_http_filter_envoy_ptr, envoy_dynamic_module_type_http_child_span_id,
+    envoy_dynamic_module_type_module_buffer, envoy_dynamic_module_type_span_kind) {
+  IS_ENVOY_BUG("envoy_dynamic_module_callback_http_child_span_create_child: not implemented in "
+               "this context");
+  return 0;
+}
+
+__attribute__((weak)) envoy_dynamic_module_type_span_envoy_ptr
+envoy_dynamic_module_callback_http_child_span_get(envoy_dynamic_module_type_http_filter_envoy_ptr,
+                                                  envoy_dynamic_module_type_http_child_span_id) {
+  IS_ENVOY_BUG(
+      "envoy_dynamic_module_callback_http_child_span_get: not implemented in this context");
+  return nullptr;
+}
+
+__attribute__((weak)) bool envoy_dynamic_module_callback_http_child_span_finish_by_id(
+    envoy_dynamic_module_type_http_filter_envoy_ptr, envoy_dynamic_module_type_http_child_span_id) {
+  IS_ENVOY_BUG("envoy_dynamic_module_callback_http_child_span_finish_by_id: not implemented in "
+               "this context");
+  return false;
 }
 
 __attribute__((weak)) bool

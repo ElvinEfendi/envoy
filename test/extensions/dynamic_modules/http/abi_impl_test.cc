@@ -3323,6 +3323,14 @@ TEST_F(DynamicModuleHttpFilterTest, SpanGetSpanId) {
   EXPECT_EQ(std::string(result.ptr, result.length), "span789");
 }
 
+TEST_F(DynamicModuleHttpFilterTest, SpanIsRecording) {
+  NiceMock<Tracing::MockSpan> mock_span;
+  EXPECT_CALL(mock_span, exportedSpan()).WillOnce(testing::Return(true));
+
+  EXPECT_TRUE(envoy_dynamic_module_callback_http_span_is_recording(&mock_span));
+  EXPECT_FALSE(envoy_dynamic_module_callback_http_span_is_recording(nullptr));
+}
+
 TEST_F(DynamicModuleHttpFilterTest, SpanSpawnChild) {
   NiceMock<Tracing::MockSpan> mock_span;
   NiceMock<Tracing::MockSpan>* child_span = new NiceMock<Tracing::MockSpan>();
@@ -3352,6 +3360,72 @@ TEST_F(DynamicModuleHttpFilterTest, SpanSpawnChild) {
   envoy_dynamic_module_callback_http_child_span_finish(child);
 }
 
+TEST_F(DynamicModuleHttpFilterTest, StreamOwnedChildSpanSupportsKindAndStableId) {
+  NiceMock<Tracing::MockSpan> parent_span;
+  auto* child_span = new NiceMock<Tracing::MockSpan>();
+  EXPECT_CALL(parent_span, spawnChild_(testing::Truly([](const Tracing::Config& config) {
+                                         return config.spanKind() == Tracing::SpanKind::Internal;
+                                       }),
+                                       std::string("module.work"), testing::_))
+      .WillOnce(testing::Return(child_span));
+
+  const auto span_id = envoy_dynamic_module_callback_http_span_create_child(
+      filter_.get(), &parent_span, {"module.work", 11},
+      envoy_dynamic_module_type_span_kind_Internal);
+  ASSERT_NE(span_id, 0);
+  EXPECT_EQ(envoy_dynamic_module_callback_http_child_span_get(filter_.get(), span_id), child_span);
+
+  EXPECT_CALL(*child_span, exportedSpan()).WillOnce(testing::Return(false));
+  EXPECT_FALSE(envoy_dynamic_module_callback_http_span_is_recording(
+      envoy_dynamic_module_callback_http_child_span_get(filter_.get(), span_id)));
+
+  EXPECT_CALL(*child_span, finishSpan());
+  EXPECT_TRUE(envoy_dynamic_module_callback_http_child_span_finish_by_id(filter_.get(), span_id));
+  EXPECT_EQ(envoy_dynamic_module_callback_http_child_span_get(filter_.get(), span_id), nullptr);
+  EXPECT_FALSE(envoy_dynamic_module_callback_http_child_span_finish_by_id(filter_.get(), span_id));
+}
+
+TEST_F(DynamicModuleHttpFilterTest, StreamOwnedChildSpanIsFinishedWithStream) {
+  NiceMock<Tracing::MockSpan> parent_span;
+  auto* child_span = new NiceMock<Tracing::MockSpan>();
+  EXPECT_CALL(parent_span, spawnChild_(testing::_, std::string("module.work"), testing::_))
+      .WillOnce(testing::Return(child_span));
+  EXPECT_NE(envoy_dynamic_module_callback_http_span_create_child(
+                filter_.get(), &parent_span, {"module.work", 11},
+                envoy_dynamic_module_type_span_kind_Client),
+            0);
+
+  EXPECT_CALL(*child_span, finishSpan());
+  filter_.reset();
+}
+
+TEST_F(DynamicModuleHttpFilterTest, StreamOwnedChildSpanIdsAreUniqueAcrossStreams) {
+  NiceMock<Tracing::MockSpan> first_parent;
+  NiceMock<Tracing::MockSpan> second_parent;
+  auto* first_child = new NiceMock<Tracing::MockSpan>();
+  auto* second_child = new NiceMock<Tracing::MockSpan>();
+  EXPECT_CALL(first_parent, spawnChild_(testing::_, std::string("first"), testing::_))
+      .WillOnce(testing::Return(first_child));
+  EXPECT_CALL(second_parent, spawnChild_(testing::_, std::string("second"), testing::_))
+      .WillOnce(testing::Return(second_child));
+
+  Stats::SymbolTableImpl second_symbol_table;
+  NiceMock<Http::MockStreamDecoderFilterCallbacks> second_callbacks;
+  auto second_filter = std::make_unique<DynamicModuleHttpFilter>(nullptr, second_symbol_table, 4);
+  second_filter->setDecoderFilterCallbacks(second_callbacks);
+  const auto first_id = envoy_dynamic_module_callback_http_span_create_child(
+      filter_.get(), &first_parent, {"first", 5}, envoy_dynamic_module_type_span_kind_Client);
+  const auto second_id = envoy_dynamic_module_callback_http_span_create_child(
+      second_filter.get(), &second_parent, {"second", 6},
+      envoy_dynamic_module_type_span_kind_Client);
+
+  EXPECT_NE(first_id, second_id);
+  EXPECT_EQ(envoy_dynamic_module_callback_http_child_span_get(second_filter.get(), first_id),
+            nullptr);
+  EXPECT_CALL(*first_child, finishSpan());
+  EXPECT_CALL(*second_child, finishSpan());
+}
+
 TEST_F(DynamicModuleHttpFilterTest, TracingCallbacksWithNullSpan) {
   // Verify all tracing callbacks handle null span gracefully.
   std::string key = "test";
@@ -3371,11 +3445,21 @@ TEST_F(DynamicModuleHttpFilterTest, TracingCallbacksWithNullSpan) {
       nullptr, {key.data(), key.size()}, &result));
   EXPECT_FALSE(envoy_dynamic_module_callback_http_span_get_trace_id(nullptr, &result));
   EXPECT_FALSE(envoy_dynamic_module_callback_http_span_get_span_id(nullptr, &result));
+  EXPECT_FALSE(envoy_dynamic_module_callback_http_span_is_recording(nullptr));
   EXPECT_EQ(envoy_dynamic_module_callback_http_span_spawn_child(nullptr, nullptr,
                                                                 {key.data(), key.size()}),
             nullptr);
   // Null child span finish should not crash.
   envoy_dynamic_module_callback_http_child_span_finish(nullptr);
+  EXPECT_EQ(
+      envoy_dynamic_module_callback_http_span_create_child(
+          nullptr, nullptr, {key.data(), key.size()}, envoy_dynamic_module_type_span_kind_Internal),
+      0);
+  EXPECT_EQ(envoy_dynamic_module_callback_http_child_span_create_child(
+                nullptr, 1, {key.data(), key.size()}, envoy_dynamic_module_type_span_kind_Internal),
+            0);
+  EXPECT_EQ(envoy_dynamic_module_callback_http_child_span_get(nullptr, 1), nullptr);
+  EXPECT_FALSE(envoy_dynamic_module_callback_http_child_span_finish_by_id(nullptr, 1));
 }
 
 TEST_F(DynamicModuleHttpFilterTest, GetActiveSpanReturnsNullWhenNoCallbacks) {
