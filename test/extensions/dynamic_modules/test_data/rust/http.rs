@@ -616,11 +616,13 @@ struct SpanCallbacksFilterConfig {}
 
 impl<EHF: EnvoyHttpFilter> HttpFilterConfig<EHF> for SpanCallbacksFilterConfig {
   fn new_http_filter(&self, _envoy: &mut EHF) -> Box<dyn HttpFilter<EHF>> {
-    Box::new(SpanCallbacksFilter {})
+    Box::new(SpanCallbacksFilter { child_span: None })
   }
 }
 
-struct SpanCallbacksFilter {}
+struct SpanCallbacksFilter {
+  child_span: Option<Box<dyn EnvoyChildSpan>>,
+}
 
 impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for SpanCallbacksFilter {
   fn on_request_headers(
@@ -629,6 +631,7 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for SpanCallbacksFilter {
     _end_of_stream: bool,
   ) -> abi::envoy_dynamic_module_type_on_http_filter_request_headers_status {
     if let Some(span) = envoy_filter.get_active_span() {
+      assert!(span.is_recording());
       span.set_tag("key", "value");
       span.set_operation("operation");
       span.log("event");
@@ -638,13 +641,25 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for SpanCallbacksFilter {
       span.set_baggage("key", "value");
       let _ = span.get_trace_id();
       let _ = span.get_span_id();
-      if let Some(mut child) = span.spawn_child("child") {
-        child.set_tag("child-key", "child-value");
-        child.finish();
+      if let Some(child) = span.spawn_child_with_kind("child", SpanKind::Internal) {
+        assert!(child.is_recording(envoy_filter));
+        child.set_tag(envoy_filter, "child-key", "child-value");
+        self.child_span = Some(child);
       }
     }
     envoy_filter.set_request_header("x-span-callbacks", b"true");
     abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
+  }
+
+  fn on_response_headers(
+    &mut self,
+    envoy_filter: &mut EHF,
+    _end_of_stream: bool,
+  ) -> abi::envoy_dynamic_module_type_on_http_filter_response_headers_status {
+    if let Some(child) = self.child_span.take() {
+      child.finish(envoy_filter);
+    }
+    abi::envoy_dynamic_module_type_on_http_filter_response_headers_status::Continue
   }
 }
 

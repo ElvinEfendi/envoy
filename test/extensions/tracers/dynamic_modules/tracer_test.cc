@@ -180,6 +180,14 @@ TEST_F(DriverTest, SpanUseLocalDecision) {
   EXPECT_TRUE(span->useLocalDecision());
 }
 
+TEST_F(DriverTest, SpanIsRecordingDefaultsTrueWhenOptionalHookIsAbsent) {
+  Tracing::TestTraceContextImpl trace_context{};
+  auto span = driver_->startSpan(tracing_config_, trace_context, stream_info_, "test_operation",
+                                 {Tracing::Reason::Sampling, true});
+
+  EXPECT_TRUE(span->exportedSpan());
+}
+
 TEST_F(DriverTest, SpanBaggage) {
   Tracing::TestTraceContextImpl trace_context{};
   Tracing::Decision decision{Tracing::Reason::Sampling, true};
@@ -251,6 +259,28 @@ TEST_F(DriverWithValuesTest, SpawnChildReturnsNullSpan) {
   EXPECT_NE(child, nullptr);
   // The returned child should be a NullSpan since the module returned nullptr.
   child->finishSpan();
+}
+
+TEST_F(DriverWithValuesTest, SpanKindIsPropagatedToOptionalHook) {
+  class InternalSpanConfig : public NiceMock<Tracing::MockConfig> {
+  public:
+    Tracing::SpanKind spanKind() const override { return Tracing::SpanKind::Internal; }
+  } internal_span_config;
+  Tracing::TestTraceContextImpl trace_context{};
+  auto span = driver_->startSpan(tracing_config_, trace_context, stream_info_, "test_operation",
+                                 {Tracing::Reason::Sampling, true});
+
+  auto child = span->spawnChild(internal_span_config, "child_operation", SystemTime{});
+
+  EXPECT_NE(dynamic_cast<DynamicModuleSpan*>(child.get()), nullptr);
+}
+
+TEST_F(DriverWithValuesTest, SpanIsRecordingUsesOptionalHook) {
+  Tracing::TestTraceContextImpl trace_context{};
+  auto span = driver_->startSpan(tracing_config_, trace_context, stream_info_, "test_operation",
+                                 {Tracing::Reason::Sampling, true});
+
+  EXPECT_FALSE(span->exportedSpan());
 }
 
 TEST_F(DriverWithValuesTest, GetBaggageReturnsValue) {

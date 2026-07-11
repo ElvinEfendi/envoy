@@ -1663,9 +1663,19 @@ WEAK_STUB(HttpSpanSetBaggage,
 WEAK_STUB(HttpSpanGetTraceId,
           envoy_dynamic_module_callback_http_span_get_trace_id(nullptr, nullptr))
 WEAK_STUB(HttpSpanGetSpanId, envoy_dynamic_module_callback_http_span_get_span_id(nullptr, nullptr))
+WEAK_STUB(HttpSpanIsRecording, envoy_dynamic_module_callback_http_span_is_recording(nullptr))
 WEAK_STUB(HttpSpanSpawnChild,
           envoy_dynamic_module_callback_http_span_spawn_child(nullptr, nullptr, {nullptr, 0}))
 WEAK_STUB(HttpChildSpanFinish, envoy_dynamic_module_callback_http_child_span_finish(nullptr))
+WEAK_STUB(HttpSpanCreateChild,
+          envoy_dynamic_module_callback_http_span_create_child(
+              nullptr, nullptr, {nullptr, 0}, envoy_dynamic_module_type_span_kind_Internal))
+WEAK_STUB(HttpChildSpanCreateChild,
+          envoy_dynamic_module_callback_http_child_span_create_child(
+              nullptr, 0, {nullptr, 0}, envoy_dynamic_module_type_span_kind_Internal))
+WEAK_STUB(HttpChildSpanGet, envoy_dynamic_module_callback_http_child_span_get(nullptr, 0))
+WEAK_STUB(HttpChildSpanFinishById,
+          envoy_dynamic_module_callback_http_child_span_finish_by_id(nullptr, 0))
 WEAK_STUB(HttpGetClusterName, envoy_dynamic_module_callback_http_get_cluster_name(nullptr, nullptr))
 WEAK_STUB(HttpGetClusterHostCount,
           envoy_dynamic_module_callback_http_get_cluster_host_count(nullptr, 0, nullptr, nullptr,

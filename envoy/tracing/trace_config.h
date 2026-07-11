@@ -9,6 +9,9 @@ constexpr uint32_t DefaultMaxPathTagLength = 256;
 
 enum class OperationName { Ingress, Egress };
 
+/** The semantic role of a tracing span. */
+enum class SpanKind { Internal, Server, Client, Producer, Consumer };
+
 /**
  * Tracing configuration, it carries additional data needed to populate the span.
  */
@@ -20,6 +23,11 @@ public:
    * @return operation name for tracing, e.g., ingress.
    */
   virtual OperationName operationName() const PURE;
+
+  /**
+   * @return the semantic role of a span created with this configuration.
+   */
+  virtual SpanKind spanKind() const { return SpanKind::Client; }
 
   /**
    * @return create separated child span for upstream request if true.

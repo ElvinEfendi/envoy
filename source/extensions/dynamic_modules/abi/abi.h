@@ -44,7 +44,7 @@
 // SDK downstream users.
 // 2. In the future, after the stable ABI is established, we may want to decouple the ABI version
 // from Envoy's versioning scheme.
-#define ENVOY_DYNAMIC_MODULES_ABI_VERSION "v0.1.0"
+#define ENVOY_DYNAMIC_MODULES_ABI_VERSION "v0.2.0"
 
 #ifdef __cplusplus
 #include <cstddef>
@@ -3080,6 +3080,18 @@ typedef void* envoy_dynamic_module_type_span_envoy_ptr;
  */
 typedef void* envoy_dynamic_module_type_child_span_module_ptr;
 
+/** A stream-owned child span identifier. Zero is always invalid. */
+typedef uint64_t envoy_dynamic_module_type_http_child_span_id;
+
+/** The semantic role of a child tracing span. */
+typedef enum envoy_dynamic_module_type_span_kind {
+  envoy_dynamic_module_type_span_kind_Internal,
+  envoy_dynamic_module_type_span_kind_Server,
+  envoy_dynamic_module_type_span_kind_Client,
+  envoy_dynamic_module_type_span_kind_Producer,
+  envoy_dynamic_module_type_span_kind_Consumer,
+} envoy_dynamic_module_type_span_kind;
+
 /**
  * envoy_dynamic_module_callback_http_get_active_span retrieves the active tracing span for the
  * current HTTP stream. This span can be used to add tags, logs, or spawn child spans.
@@ -3202,6 +3214,13 @@ bool envoy_dynamic_module_callback_http_span_get_span_id(
     envoy_dynamic_module_type_span_envoy_ptr span, envoy_dynamic_module_type_envoy_buffer* result);
 
 /**
+ * Returns whether data recorded on the span can be exported by the configured tracer.
+ * Modules can use this to skip expensive tag or event construction for discarded spans.
+ */
+bool envoy_dynamic_module_callback_http_span_is_recording(
+    envoy_dynamic_module_type_span_envoy_ptr span);
+
+/**
  * envoy_dynamic_module_callback_http_span_spawn_child creates a child span with the given
  * operation name. The child span is owned by the module and must be finished by calling
  * envoy_dynamic_module_callback_http_child_span_finish.
@@ -3224,6 +3243,37 @@ envoy_dynamic_module_type_child_span_module_ptr envoy_dynamic_module_callback_ht
  */
 void envoy_dynamic_module_callback_http_child_span_finish(
     envoy_dynamic_module_type_child_span_module_ptr span);
+
+/**
+ * Creates a stream-owned child span. The returned identifier remains valid across module callbacks
+ * until it is finished or the HTTP stream is destroyed. Zero indicates failure.
+ */
+envoy_dynamic_module_type_http_child_span_id envoy_dynamic_module_callback_http_span_create_child(
+    envoy_dynamic_module_type_http_filter_envoy_ptr filter_envoy_ptr,
+    envoy_dynamic_module_type_span_envoy_ptr parent_span,
+    envoy_dynamic_module_type_module_buffer operation_name,
+    envoy_dynamic_module_type_span_kind span_kind);
+
+/** Creates a stream-owned child span from another stream-owned child span. */
+envoy_dynamic_module_type_http_child_span_id
+envoy_dynamic_module_callback_http_child_span_create_child(
+    envoy_dynamic_module_type_http_filter_envoy_ptr filter_envoy_ptr,
+    envoy_dynamic_module_type_http_child_span_id parent_span_id,
+    envoy_dynamic_module_type_module_buffer operation_name,
+    envoy_dynamic_module_type_span_kind span_kind);
+
+/**
+ * Resolves a stream-owned child span identifier for immediate use in another tracing callback.
+ * The returned pointer must not be retained by the module.
+ */
+envoy_dynamic_module_type_span_envoy_ptr envoy_dynamic_module_callback_http_child_span_get(
+    envoy_dynamic_module_type_http_filter_envoy_ptr filter_envoy_ptr,
+    envoy_dynamic_module_type_http_child_span_id span_id);
+
+/** Finishes and releases a stream-owned child span. Returns false for an unknown identifier. */
+bool envoy_dynamic_module_callback_http_child_span_finish_by_id(
+    envoy_dynamic_module_type_http_filter_envoy_ptr filter_envoy_ptr,
+    envoy_dynamic_module_type_http_child_span_id span_id);
 
 // ------------------- Cluster/Upstream Information Callbacks -------------------------
 
@@ -12501,6 +12551,16 @@ envoy_dynamic_module_type_tracer_span_module_ptr envoy_dynamic_module_on_tracer_
     envoy_dynamic_module_type_envoy_buffer name, int64_t start_time_ns);
 
 /**
+ * Optional kind-aware variant of envoy_dynamic_module_on_tracer_span_spawn_child. Envoy falls back
+ * to the original hook when this symbol is absent.
+ */
+envoy_dynamic_module_type_tracer_span_module_ptr
+envoy_dynamic_module_on_tracer_span_spawn_child_with_kind(
+    envoy_dynamic_module_type_tracer_span_module_ptr span_module_ptr,
+    envoy_dynamic_module_type_envoy_buffer name, int64_t start_time_ns,
+    envoy_dynamic_module_type_span_kind span_kind);
+
+/**
  * envoy_dynamic_module_on_tracer_span_set_sampled is called to override the sampling decision.
  *
  * @param span_module_ptr is the pointer to the in-module span instance.
@@ -12517,6 +12577,13 @@ void envoy_dynamic_module_on_tracer_span_set_sampled(
  * @return true if Envoy's sampling decision is used, false if the module has its own.
  */
 bool envoy_dynamic_module_on_tracer_span_use_local_decision(
+    envoy_dynamic_module_type_tracer_span_module_ptr span_module_ptr);
+
+/**
+ * Optional hook that reports whether data recorded on the span can be exported. Envoy assumes true
+ * when this symbol is absent.
+ */
+bool envoy_dynamic_module_on_tracer_span_is_recording(
     envoy_dynamic_module_type_tracer_span_module_ptr span_module_ptr);
 
 /**

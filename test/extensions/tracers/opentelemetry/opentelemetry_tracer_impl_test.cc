@@ -672,6 +672,16 @@ TEST_F(OpenTelemetryDriverTest, SpanType) {
     // The child span should also be a CLIENT span.
     EXPECT_EQ(dynamic_cast<Span*>(child_span.get())->spanForTest().kind(),
               ::opentelemetry::proto::trace::v1::Span::SPAN_KIND_CLIENT);
+
+    class InternalSpanConfig : public NiceMock<Tracing::MockConfig> {
+    public:
+      Tracing::SpanKind spanKind() const override { return Tracing::SpanKind::Internal; }
+    } internal_span_config;
+    EXPECT_CALL(mock_random_generator_, random()).WillOnce(Return(child_span_id));
+    Tracing::SpanPtr internal_span =
+        span->spawnChild(internal_span_config, operation_name_, time_system_.systemTime());
+    EXPECT_EQ(dynamic_cast<Span*>(internal_span.get())->spanForTest().kind(),
+              ::opentelemetry::proto::trace::v1::Span::SPAN_KIND_INTERNAL);
   }
 
   {

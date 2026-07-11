@@ -88,6 +88,16 @@ envoy_dynamic_module_on_tracer_span_spawn_child(
   return NULL;
 }
 
+envoy_dynamic_module_type_tracer_span_module_ptr
+envoy_dynamic_module_on_tracer_span_spawn_child_with_kind(
+    envoy_dynamic_module_type_tracer_span_module_ptr span_module_ptr,
+    envoy_dynamic_module_type_envoy_buffer name, int64_t start_time_ns,
+    envoy_dynamic_module_type_span_kind span_kind) {
+  (void)name;
+  (void)start_time_ns;
+  return span_kind == envoy_dynamic_module_type_span_kind_Internal ? span_module_ptr : NULL;
+}
+
 void envoy_dynamic_module_on_tracer_span_set_sampled(
     envoy_dynamic_module_type_tracer_span_module_ptr span_module_ptr, bool sampled) {
   (void)span_module_ptr;
@@ -98,6 +108,12 @@ bool envoy_dynamic_module_on_tracer_span_use_local_decision(
     envoy_dynamic_module_type_tracer_span_module_ptr span_module_ptr) {
   (void)span_module_ptr;
   return true;
+}
+
+bool envoy_dynamic_module_on_tracer_span_is_recording(
+    envoy_dynamic_module_type_tracer_span_module_ptr span_module_ptr) {
+  (void)span_module_ptr;
+  return false;
 }
 
 bool envoy_dynamic_module_on_tracer_span_get_baggage(

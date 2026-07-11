@@ -700,17 +700,34 @@ TEST_P(DynamicModuleHttpLanguageTests, SpanCallbacks) {
   EXPECT_CALL(span, setBaggage("key", "value"));
   EXPECT_CALL(span, getTraceId()).WillOnce(testing::Return("trace-id"));
   EXPECT_CALL(span, getSpanId()).WillOnce(testing::Return("span-id"));
-  EXPECT_CALL(span, spawnChild_(testing::_, "child", testing::_))
-      .WillOnce(testing::Return(child_span));
+  if (GetParam() == "rust") {
+    EXPECT_CALL(span, exportedSpan()).WillOnce(testing::Return(true));
+    EXPECT_CALL(span, spawnChild_(testing::Truly([](const Tracing::Config& config) {
+                                    return config.spanKind() == Tracing::SpanKind::Internal;
+                                  }),
+                                  "child", testing::_))
+        .WillOnce(testing::Return(child_span));
+    EXPECT_CALL(*child_span, exportedSpan()).WillOnce(testing::Return(true));
+  } else {
+    EXPECT_CALL(span, spawnChild_(testing::_, "child", testing::_))
+        .WillOnce(testing::Return(child_span));
+  }
   EXPECT_CALL(*child_span, setTag("child-key", "child-value"));
   EXPECT_CALL(*child_span, finishSpan());
   Http::TestRequestHeaderMapImpl request_headers{{}};
   EXPECT_CALL(callbacks, requestHeaders())
       .WillRepeatedly(testing::Return(makeOptRef<RequestHeaderMap>(request_headers)));
   filter->setDecoderFilterCallbacks(callbacks);
+  NiceMock<Http::MockStreamEncoderFilterCallbacks> encoder_callbacks;
+  filter->setEncoderFilterCallbacks(encoder_callbacks);
 
   EXPECT_EQ(FilterHeadersStatus::Continue, filter->decodeHeaders(request_headers, false));
   EXPECT_EQ(request_headers.get_("x-span-callbacks"), "true");
+
+  if (GetParam() == "rust") {
+    Http::TestResponseHeaderMapImpl response_headers{{":status", "200"}};
+    EXPECT_EQ(FilterHeadersStatus::Continue, filter->encodeHeaders(response_headers, false));
+  }
 
   filter->onDestroy();
 }
