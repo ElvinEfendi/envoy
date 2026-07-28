@@ -9,9 +9,13 @@
 #include "envoy/registry/registry.h"
 
 #include "source/common/router/string_accessor_impl.h"
+#include "source/common/stats/allocator.h"
+#include "source/common/stats/stats_matcher_impl.h"
+#include "source/common/stats/thread_local_store.h"
 #include "source/extensions/filters/http/dynamic_modules/filter.h"
 #include "source/extensions/filters/http/dynamic_modules/filter_config.h"
 
+#include "test/common/memory/memory_test_utility.h"
 #include "test/common/stats/stat_test_utility.h"
 #include "test/extensions/dynamic_modules/util.h"
 #include "test/mocks/event/mocks.h"
@@ -2902,6 +2906,53 @@ TEST(ABIImpl, Stats) {
       filter_config.get(), {histogram_no_labels_name.data(), histogram_no_labels_name.size()},
       nullptr, 0, &histogram_no_labels_id);
   EXPECT_EQ(result, envoy_dynamic_module_type_metrics_result_Frozen);
+}
+
+TEST(ABIImpl, StreamMetricLabelValuesDoNotAccumulateMemory) {
+  Stats::SymbolTableImpl symbol_table;
+  Stats::Allocator allocator(symbol_table);
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr stats_scope = stats_store.rootScope();
+  NiceMock<Server::Configuration::MockServerFactoryContext> context;
+  envoy::config::metrics::v3::StatsConfig stats_config;
+  stats_config.mutable_stats_matcher()->set_reject_all(true);
+  stats_store.setStatsMatcher(
+      std::make_unique<Stats::StatsMatcherImpl>(stats_config, symbol_table, context));
+
+  auto filter_config = std::make_shared<DynamicModuleHttpFilterConfig>(
+      "some_name", "some_config", DefaultMetricsNamespace, nullptr, *stats_scope, context);
+  DynamicModuleHttpFilter filter{filter_config, symbol_table, 0};
+
+  const std::string counter_name{"some_counter_vec"};
+  const std::string label_name{"some_label"};
+  envoy_dynamic_module_type_module_buffer label_name_buffer{const_cast<char*>(label_name.data()),
+                                                            label_name.size()};
+  size_t counter_id;
+  ASSERT_EQ(envoy_dynamic_module_callback_http_filter_config_define_counter(
+                filter_config.get(), {counter_name.data(), counter_name.size()}, &label_name_buffer,
+                1, &counter_id),
+            envoy_dynamic_module_type_metrics_result_Success);
+
+  std::vector<std::string> label_values;
+  label_values.reserve(256);
+  for (size_t i = 0; i < 256; ++i) {
+    label_values.push_back(std::to_string(i) + std::string(4096, 'x'));
+  }
+
+  envoy_dynamic_module_type_metrics_result result =
+      envoy_dynamic_module_type_metrics_result_Success;
+  Memory::TestUtil::MemoryTest memory_test;
+  for (const std::string& label_value : label_values) {
+    envoy_dynamic_module_type_module_buffer label_value_buffer{
+        const_cast<char*>(label_value.data()), label_value.size()};
+    result = envoy_dynamic_module_callback_http_filter_increment_counter(&filter, counter_id,
+                                                                         &label_value_buffer, 1, 1);
+  }
+  const size_t memory_consumed = memory_test.consumedBytes();
+
+  EXPECT_EQ(result, envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_MEMORY_LE(memory_consumed, 64 * 1024);
+  EXPECT_TRUE(stats_store.counters().empty());
 }
 
 // Metrics can also be emitted directly from the filter config context (e.g. from a scheduled
