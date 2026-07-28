@@ -20,6 +20,11 @@ envoy_dynamic_module_type_tracer_config_module_ptr envoy_dynamic_module_on_trace
       (void)envoy_dynamic_module_callback_tracer_increment_counter(
           config_envoy_ptr, counter_id, NULL, 0, 1);
     }
+  } else if (name.length == 18 && memcmp(name.ptr, "shared_stats_scope", 18) == 0) {
+    size_t counter_id = 0;
+    envoy_dynamic_module_type_module_buffer counter_name = {.ptr = "tracer_total", .length = 12};
+    (void)envoy_dynamic_module_callback_tracer_define_counter(config_envoy_ptr, counter_name, NULL,
+                                                              0, &counter_id);
   }
   static int config_dummy = 0;
   return &config_dummy;

@@ -1,13 +1,16 @@
 #include "envoy/extensions/filters/network/dynamic_modules/v3/dynamic_modules.pb.h"
+#include "envoy/extensions/tracers/dynamic_modules/v3/dynamic_modules.pb.h"
 
 #include "source/common/stats/allocator.h"
 #include "source/common/stats/custom_stat_namespaces_impl.h"
 #include "source/common/stats/thread_local_store.h"
 #include "source/extensions/filters/network/dynamic_modules/factory.h"
+#include "source/extensions/tracers/dynamic_modules/config.h"
 
 #include "test/extensions/dynamic_modules/util.h"
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/server/factory_context.h"
+#include "test/mocks/server/tracer_factory_context.h"
 #include "test/test_common/environment.h"
 #include "test/test_common/status_utility.h"
 #include "test/test_common/test_runtime.h"
@@ -193,6 +196,63 @@ TEST_F(DynamicModuleNetworkFilterFactoryTest, StatsScopeIsFinalScopeForModuleMet
   EXPECT_EQ(nullptr, TestUtility::findCounter(stats_store, "bounded.second"));
   EXPECT_FALSE(custom_stat_namespaces.registered("bounded"));
   EXPECT_FALSE(custom_stat_namespaces.registered("dynamicmodulescustom"));
+}
+
+TEST_F(DynamicModuleNetworkFilterFactoryTest, StatsScopeSharingSpansExtensionPoints) {
+  Stats::SymbolTableImpl symbol_table;
+  Stats::Allocator allocator(symbol_table);
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr root_scope = stats_store.rootScope();
+  ON_CALL(context_.server_factory_context_, scope()).WillByDefault(testing::ReturnRef(*root_scope));
+  ON_CALL(context_.server_factory_context_, serverScope())
+      .WillByDefault(testing::ReturnRef(*root_scope));
+
+  NiceMock<MockTracerFactoryContext> tracer_context;
+  ON_CALL(tracer_context.server_factory_context_, scope())
+      .WillByDefault(testing::ReturnRef(*root_scope));
+  ON_CALL(tracer_context.server_factory_context_, serverScope())
+      .WillByDefault(testing::ReturnRef(*root_scope));
+  ON_CALL(tracer_context.server_factory_context_, singletonManager())
+      .WillByDefault(testing::ReturnRef(*context_.server_factory_context_.singleton_manager_));
+
+  envoy::extensions::filters::network::dynamic_modules::v3::DynamicModuleNetworkFilter
+      network_config;
+  network_config.mutable_dynamic_module_config()->set_name("network_no_op");
+  network_config.mutable_dynamic_module_config()->mutable_stats_scope()->set_prefix(
+      "shared_dynamic_module");
+  network_config.mutable_dynamic_module_config()->mutable_stats_scope()->set_sharing_name(
+      "shared_module");
+  network_config.mutable_dynamic_module_config()
+      ->mutable_stats_scope()
+      ->mutable_max_counters()
+      ->set_value(1);
+  network_config.set_filter_name("shared_stats_scope");
+
+  auto network_result = factory_.createFilterFactoryFromProto(network_config, context_);
+
+  ASSERT_OK(network_result);
+  EXPECT_NE(nullptr, TestUtility::findCounter(stats_store, "shared_dynamic_module.network_total"));
+
+  Extensions::Tracers::DynamicModules::DynamicModuleTracerFactory tracer_factory;
+  envoy::extensions::tracers::dynamic_modules::v3::DynamicModuleTracer tracer_config;
+  tracer_config.mutable_dynamic_module_config()->set_name("tracer_no_op");
+  tracer_config.mutable_dynamic_module_config()->mutable_stats_scope()->set_prefix(
+      "shared_dynamic_module");
+  tracer_config.mutable_dynamic_module_config()->mutable_stats_scope()->set_sharing_name(
+      "shared_module");
+  tracer_config.mutable_dynamic_module_config()
+      ->mutable_stats_scope()
+      ->mutable_max_counters()
+      ->set_value(1);
+  tracer_config.set_tracer_name("shared_stats_scope");
+
+  auto driver = tracer_factory.createTracerDriver(tracer_config, tracer_context);
+
+  ASSERT_NE(nullptr, driver);
+  EXPECT_EQ(nullptr, TestUtility::findCounter(stats_store, "shared_dynamic_module.tracer_total"));
+  auto overflow = TestUtility::findCounter(stats_store, "server.stats_overflow.counter");
+  ASSERT_NE(nullptr, overflow);
+  EXPECT_EQ(1U, overflow->value());
 }
 
 TEST_F(DynamicModuleNetworkFilterFactoryTest, MalformedFilterConfig) {

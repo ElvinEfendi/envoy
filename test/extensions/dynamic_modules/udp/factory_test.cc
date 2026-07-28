@@ -133,6 +133,30 @@ filter_name: test_filter
                                "test_filter"));
 }
 
+TEST_F(DynamicModuleUdpListenerFilterFactoryTest,
+       StatsScopePrefixConflictPrecedesModuleInitialization) {
+  NiceMock<Server::Configuration::MockListenerFactoryContext> context;
+  const std::string yaml = R"EOF(
+dynamic_module_config:
+  name: nonexistent_module
+  metrics_namespace: legacy
+  stats_scope:
+    prefix: bounded
+filter_name: prefix_conflict
+)EOF";
+
+  envoy::extensions::filters::udp::dynamic_modules::v3::DynamicModuleUdpListenerFilter proto_config;
+  TestUtility::loadFromYaml(yaml, proto_config);
+
+  EXPECT_THROW_WITH_MESSAGE(factory_.createFilterFactoryFromProto(proto_config, context),
+                            EnvoyException,
+                            "metrics_namespace and stats_scope.prefix cannot both be non-empty");
+  EXPECT_EQ(1U, failureCounter(context.server_factory_context_.serverScope(), "config_init_error",
+                               "prefix_conflict"));
+  EXPECT_EQ(0U, failureCounter(context.server_factory_context_.serverScope(), "module_load_error",
+                               "prefix_conflict"));
+}
+
 TEST_F(DynamicModuleUdpListenerFilterFactoryTest, ModuleWithoutUdpSupport) {
   NiceMock<Server::Configuration::MockListenerFactoryContext> context;
 

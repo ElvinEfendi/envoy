@@ -147,8 +147,11 @@ A scope with an empty ``sharing_name`` is distinct and remains under the extensi
 parent scope. A non-empty ``sharing_name`` creates a process-wide scope rooted at the server scope.
 Configurations share that scope only when their complete effective :ref:`Scope
 <envoy_v3_api_msg_type.v3.Scope>` configuration matches exactly. Re-rooting a shared scope can
-change its fully qualified metric names. Admitted stats remain in a shared budget until every
-configuration using the shared scope is destroyed.
+change its fully qualified metric names. Sharing spans dynamic-module extension-point types, so
+admitted stats remain in a shared budget until every configuration of any type using the shared
+scope is destroyed. For UDP listener filters, an implicit prefix includes the filter name and can
+therefore be shared only by filters with the same name; an explicit prefix permits sharing across
+filter names.
 
 Dynamic modules cannot enable stat eviction because metric handles retain direct references to
 their stats. Metric-producing extension points reject configurations with

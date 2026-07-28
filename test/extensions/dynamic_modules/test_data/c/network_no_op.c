@@ -28,6 +28,11 @@ envoy_dynamic_module_on_network_filter_config_new(
         filter_config_envoy_ptr, first, &counter_id);
     (void)envoy_dynamic_module_callback_network_filter_config_define_counter(
         filter_config_envoy_ptr, second, &counter_id);
+  } else if (name.length == 18 && memcmp(name.ptr, "shared_stats_scope", 18) == 0) {
+    envoy_dynamic_module_type_module_buffer counter = {"network_total", 13};
+    size_t counter_id = 0;
+    (void)envoy_dynamic_module_callback_network_filter_config_define_counter(
+        filter_config_envoy_ptr, counter, &counter_id);
   }
   return &some_variable;
 }
