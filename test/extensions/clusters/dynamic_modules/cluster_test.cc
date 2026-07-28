@@ -8,6 +8,8 @@
 #include "source/common/config/metadata.h"
 #include "source/common/http/message_impl.h"
 #include "source/common/router/string_accessor_impl.h"
+#include "source/common/stats/allocator.h"
+#include "source/common/stats/thread_local_store.h"
 #include "source/common/stream_info/filter_state_impl.h"
 #include "source/extensions/clusters/dynamic_modules/cluster.h"
 #include "source/extensions/dynamic_modules/dynamic_modules.h"
@@ -232,6 +234,29 @@ TEST_F(DynamicModuleClusterTest, MissingModule) {
   ASSERT_THAT(result, HasStatusMessage(testing::HasSubstr("Failed to load dynamic module")));
 
   EXPECT_EQ(1U, failureCounter(server_context_.serverScope(), "module_load_error", "test"));
+}
+
+TEST_F(DynamicModuleClusterTest, StatsScopeValidationPrecedesModuleInitialization) {
+  const std::string yaml = R"EOF(
+name: test_cluster
+connect_timeout: 0.25s
+lb_policy: CLUSTER_PROVIDED
+cluster_type:
+  name: envoy.clusters.dynamic_modules
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_modules.v3.ClusterConfig
+    dynamic_module_config:
+      name: nonexistent_module
+      stats_scope:
+        enable_eviction: true
+    cluster_name: test
+)EOF";
+
+  auto result = createCluster(yaml);
+  ASSERT_THAT(result, HasStatusMessage(testing::HasSubstr(
+                          "Dynamic modules do not support stats_scope.enable_eviction")));
+  EXPECT_EQ(1U, failureCounter(server_context_.serverScope(), "config_init_error", "test"));
+  EXPECT_EQ(0U, failureCounter(server_context_.serverScope(), "module_load_error", "test"));
 }
 
 // Test that on_cluster_config_new returning nullptr fails.
@@ -1614,6 +1639,80 @@ TEST_F(DynamicModuleClusterTest, AllLifecycleCallbacksRegistered) {
 // =============================================================================
 // Metrics Tests
 // =============================================================================
+
+TEST_F(DynamicModuleClusterTest, ExplicitStatsScopeIsFinalForModuleMetrics) {
+  Stats::Allocator allocator(server_context_.store_.symbolTable());
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr root_scope = stats_store.rootScope();
+  ON_CALL(server_context_, scope()).WillByDefault(testing::ReturnRef(*root_scope));
+  ON_CALL(server_context_, serverScope()).WillByDefault(testing::ReturnRef(*root_scope));
+
+  const std::string yaml = R"EOF(
+name: test_cluster
+connect_timeout: 0.25s
+lb_policy: CLUSTER_PROVIDED
+cluster_type:
+  name: envoy.clusters.dynamic_modules
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_modules.v3.ClusterConfig
+    dynamic_module_config:
+      name: cluster_no_op
+      stats_scope:
+        prefix: bounded
+        max_counters: 0
+    cluster_name: test
+)EOF";
+  auto result = createCluster(yaml);
+  ASSERT_OK(result);
+
+  auto cluster = std::dynamic_pointer_cast<DynamicModuleCluster>(result->first);
+  ASSERT_NE(nullptr, cluster);
+  auto* config = cluster->config().get();
+  unfreezeStatCreation(*config);
+
+  size_t counter_id = 0;
+  envoy_dynamic_module_type_module_buffer name = {const_cast<char*>("rejected"), 8};
+  EXPECT_EQ(envoy_dynamic_module_type_metrics_result_Success,
+            envoy_dynamic_module_callback_cluster_config_define_counter(config, name, nullptr, 0,
+                                                                        &counter_id));
+  EXPECT_EQ(nullptr, TestUtility::findCounter(stats_store, "bounded.rejected"));
+  auto overflow = TestUtility::findCounter(stats_store, "server.stats_overflow.counter");
+  ASSERT_NE(nullptr, overflow);
+  EXPECT_EQ(1U, overflow->value());
+}
+
+TEST_F(DynamicModuleClusterTest, MetricsNamespaceWithoutStatsScopePreservesLegacyPrefix) {
+  const std::string yaml = R"EOF(
+name: test_cluster
+connect_timeout: 0.25s
+lb_policy: CLUSTER_PROVIDED
+cluster_type:
+  name: envoy.clusters.dynamic_modules
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_modules.v3.ClusterConfig
+    dynamic_module_config:
+      name: cluster_no_op
+      metrics_namespace: ignored_without_stats_scope
+    cluster_name: test
+)EOF";
+  auto result = createCluster(yaml);
+  ASSERT_OK(result);
+
+  auto cluster = std::dynamic_pointer_cast<DynamicModuleCluster>(result->first);
+  ASSERT_NE(nullptr, cluster);
+  auto* config = cluster->config().get();
+  unfreezeStatCreation(*config);
+
+  size_t counter_id = 0;
+  envoy_dynamic_module_type_module_buffer name = {const_cast<char*>("accepted"), 8};
+  EXPECT_EQ(envoy_dynamic_module_type_metrics_result_Success,
+            envoy_dynamic_module_callback_cluster_config_define_counter(config, name, nullptr, 0,
+                                                                        &counter_id));
+  EXPECT_NE(nullptr,
+            TestUtility::findCounter(server_context_.store_, "dynamicmodulescustom.accepted"));
+  EXPECT_EQ(nullptr, TestUtility::findCounter(server_context_.store_,
+                                              "ignored_without_stats_scope.accepted"));
+}
 
 // Test defining and incrementing a scalar counter via the ABI callbacks.
 TEST_F(DynamicModuleClusterTest, MetricsDefineAndIncrementCounter) {

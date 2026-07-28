@@ -3,6 +3,9 @@
 
 #include "envoy/extensions/load_balancing_policies/dynamic_modules/v3/dynamic_modules.pb.h"
 
+#include "source/common/stats/allocator.h"
+#include "source/common/stats/custom_stat_namespaces_impl.h"
+#include "source/common/stats/thread_local_store.h"
 #include "source/common/upstream/upstream_impl.h"
 #include "source/extensions/load_balancing_policies/dynamic_modules/config.h"
 #include "source/extensions/load_balancing_policies/dynamic_modules/load_balancer.h"
@@ -16,6 +19,7 @@
 #include "test/mocks/upstream/priority_set.h"
 #include "test/test_common/environment.h"
 #include "test/test_common/status_utility.h"
+#include "test/test_common/test_runtime.h"
 #include "test/test_common/utility.h"
 
 #include "absl/strings/str_cat.h"
@@ -128,6 +132,99 @@ TEST_F(DynamicModulesLoadBalancerConfigTest, LoadConfigModuleConfigNewFails) {
   // The module loads fine but its config creation fails, so this is counted as config_init_error.
   EXPECT_EQ(1U, failureCounter(factory_context_.serverScope(), "config_init_error", "test_lb"));
   EXPECT_EQ(0U, failureCounter(factory_context_.serverScope(), "module_load_error", "test_lb"));
+}
+
+TEST_F(DynamicModulesLoadBalancerConfigTest, StatsScopeValidationPrecedesModuleInitialization) {
+  {
+    NiceMock<Server::Configuration::MockServerFactoryContext> context;
+    envoy::extensions::load_balancing_policies::dynamic_modules::v3::
+        DynamicModulesLoadBalancerConfig config;
+    config.mutable_dynamic_module_config()->set_name("program_init_fail");
+    config.mutable_dynamic_module_config()->mutable_stats_scope()->set_enable_eviction(true);
+    config.set_lb_policy_name("eviction");
+
+    Factory factory;
+    auto result = factory.loadConfig(context, config);
+
+    EXPECT_THAT(result, HasStatusMessage(testing::HasSubstr(
+                            "Dynamic modules do not support stats_scope.enable_eviction")));
+    EXPECT_EQ(1U, failureCounter(context.serverScope(), "config_init_error", "eviction"));
+    EXPECT_EQ(0U, failureCounter(context.serverScope(), "module_load_error", "eviction"));
+  }
+
+  {
+    NiceMock<Server::Configuration::MockServerFactoryContext> context;
+    envoy::extensions::load_balancing_policies::dynamic_modules::v3::
+        DynamicModulesLoadBalancerConfig config;
+    config.mutable_dynamic_module_config()->set_name("program_init_fail");
+    config.mutable_dynamic_module_config()->set_metrics_namespace("legacy");
+    config.mutable_dynamic_module_config()->mutable_stats_scope()->set_prefix("scoped");
+    config.set_lb_policy_name("prefix_conflict");
+
+    Factory factory;
+    auto result = factory.loadConfig(context, config);
+
+    EXPECT_THAT(result, HasStatusMessage(testing::HasSubstr(
+                            "metrics_namespace and stats_scope.prefix cannot both be non-empty")));
+    EXPECT_EQ(1U, failureCounter(context.serverScope(), "config_init_error", "prefix_conflict"));
+    EXPECT_EQ(0U, failureCounter(context.serverScope(), "module_load_error", "prefix_conflict"));
+  }
+}
+
+TEST_F(DynamicModulesLoadBalancerConfigTest, StatsScopeIsFinalScopeForModuleMetrics) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix", "true"}});
+
+  Stats::CustomStatNamespacesImpl custom_stat_namespaces;
+  ON_CALL(factory_context_.api_, customStatNamespaces())
+      .WillByDefault(testing::ReturnRef(custom_stat_namespaces));
+  Stats::SymbolTableImpl symbol_table;
+  Stats::Allocator allocator(symbol_table);
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr root_scope = stats_store.rootScope();
+  ON_CALL(factory_context_, serverScope()).WillByDefault(testing::ReturnRef(*root_scope));
+
+  envoy::extensions::load_balancing_policies::dynamic_modules::v3::DynamicModulesLoadBalancerConfig
+      config;
+  config.mutable_dynamic_module_config()->set_name("lb_callbacks_test");
+  config.mutable_dynamic_module_config()->mutable_stats_scope()->set_prefix("bounded");
+  config.mutable_dynamic_module_config()->mutable_stats_scope()->mutable_max_counters()->set_value(
+      1);
+  config.set_lb_policy_name("stats_scope");
+
+  Factory factory;
+  auto result = factory.loadConfig(factory_context_, config);
+
+  ASSERT_OK(result);
+  EXPECT_NE(nullptr, TestUtility::findCounter(stats_store, "bounded.first"));
+  EXPECT_EQ(nullptr, TestUtility::findCounter(stats_store, "bounded.second"));
+  EXPECT_FALSE(custom_stat_namespaces.registered("bounded"));
+  EXPECT_FALSE(custom_stat_namespaces.registered("dynamicmodulescustom"));
+}
+
+TEST_F(DynamicModulesLoadBalancerConfigTest, StatsScopeLimitsPreserveLegacyNamespaceRegistration) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix", "true"}});
+
+  Stats::CustomStatNamespacesImpl custom_stat_namespaces;
+  ON_CALL(factory_context_.api_, customStatNamespaces())
+      .WillByDefault(testing::ReturnRef(custom_stat_namespaces));
+
+  envoy::extensions::load_balancing_policies::dynamic_modules::v3::DynamicModulesLoadBalancerConfig
+      config;
+  config.mutable_dynamic_module_config()->set_name("lb_round_robin");
+  config.mutable_dynamic_module_config()->set_metrics_namespace("legacy_namespace");
+  config.mutable_dynamic_module_config()->mutable_stats_scope()->mutable_max_counters()->set_value(
+      1);
+  config.set_lb_policy_name("test_lb");
+
+  Factory factory;
+  auto result = factory.loadConfig(factory_context_, config);
+
+  ASSERT_OK(result);
+  EXPECT_TRUE(custom_stat_namespaces.registered("legacy_namespace"));
 }
 
 TEST_F(DynamicModulesLoadBalancerConfigTest, LoadConfigMalformedLbPolicyConfig) {

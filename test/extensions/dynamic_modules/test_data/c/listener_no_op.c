@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <string.h>
 
 #include "source/extensions/dynamic_modules/abi/abi.h"
 
@@ -18,9 +19,16 @@ envoy_dynamic_module_type_listener_filter_config_module_ptr
 envoy_dynamic_module_on_listener_filter_config_new(
     envoy_dynamic_module_type_listener_filter_config_envoy_ptr filter_config_envoy_ptr,
     envoy_dynamic_module_type_envoy_buffer name, envoy_dynamic_module_type_envoy_buffer config) {
-  (void)filter_config_envoy_ptr;
-  (void)name;
   (void)config;
+  if (name.length == 11 && memcmp(name.ptr, "stats_scope", 11) == 0) {
+    envoy_dynamic_module_type_module_buffer first = {"first", 5};
+    envoy_dynamic_module_type_module_buffer second = {"second", 6};
+    size_t counter_id = 0;
+    (void)envoy_dynamic_module_callback_listener_filter_config_define_counter(
+        filter_config_envoy_ptr, first, &counter_id);
+    (void)envoy_dynamic_module_callback_listener_filter_config_define_counter(
+        filter_config_envoy_ptr, second, &counter_id);
+  }
   return &some_variable;
 }
 

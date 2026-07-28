@@ -84,6 +84,8 @@ public:
    * @param main_thread_dispatcher the main thread dispatcher.
    * @param context the server factory context for accessing cluster manager lazily.
    * @param stats_store the stats store for accessing metrics.
+   * @param final_stats_scope an optional prebuilt final scope. When provided, metrics are created
+   * directly in this scope instead of a child of stats_store's root scope.
    */
   DynamicModuleBootstrapExtensionConfig(const absl::string_view extension_name,
                                         const absl::string_view extension_config,
@@ -91,7 +93,8 @@ public:
                                         Extensions::DynamicModules::DynamicModulePtr dynamic_module,
                                         Event::Dispatcher& main_thread_dispatcher,
                                         Server::Configuration::ServerFactoryContext& context,
-                                        Stats::Store& stats_store);
+                                        Stats::Store& stats_store,
+                                        Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
   ~DynamicModuleBootstrapExtensionConfig() override;
 
@@ -549,6 +552,8 @@ private:
  * @param main_thread_dispatcher the main thread dispatcher.
  * @param context the server factory context for accessing cluster manager lazily.
  * @param stats_store the stats store for accessing metrics.
+ * @param final_stats_scope an optional prebuilt final scope. When provided, metrics are created
+ * directly in this scope instead of a child of stats_store's root scope.
  * @return an error status if the module could not be loaded or the configuration could not be
  * created, or a shared pointer to the config.
  */
@@ -558,7 +563,7 @@ newDynamicModuleBootstrapExtensionConfig(
     const absl::string_view metrics_namespace,
     Extensions::DynamicModules::DynamicModulePtr dynamic_module,
     Event::Dispatcher& main_thread_dispatcher, Server::Configuration::ServerFactoryContext& context,
-    Stats::Store& stats_store);
+    Stats::Store& stats_store, Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
 } // namespace DynamicModules
 } // namespace Bootstrap

@@ -45,12 +45,15 @@ public:
    * @param metrics_namespace the namespace prefix for metrics emitted by this module.
    * @param dynamic_module the dynamic module to use.
    * @param stats_scope the stats scope for metrics.
+   * @param final_stats_scope an optional prebuilt final scope. When provided, metrics are created
+   * directly in this scope instead of a child of stats_scope.
    */
   DynamicModuleAccessLogConfig(const absl::string_view logger_name,
                                const absl::string_view logger_config,
                                const absl::string_view metrics_namespace,
                                Extensions::DynamicModules::DynamicModulePtr dynamic_module,
-                               Stats::Scope& stats_scope);
+                               Stats::Scope& stats_scope,
+                               Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
   ~DynamicModuleAccessLogConfig();
 
@@ -154,7 +157,8 @@ private:
                                   const absl::string_view logger_config,
                                   const absl::string_view metrics_namespace,
                                   Extensions::DynamicModules::DynamicModulePtr dynamic_module,
-                                  Stats::Scope& stats_scope);
+                                  Stats::Scope& stats_scope,
+                                  Stats::ScopeSharedPtr final_stats_scope);
 
   // The name of the logger passed in the constructor.
   const std::string logger_name_;
@@ -180,12 +184,15 @@ using DynamicModuleAccessLogConfigSharedPtr = std::shared_ptr<DynamicModuleAcces
  * @param metrics_namespace the namespace prefix for metrics emitted by this module.
  * @param dynamic_module the dynamic module to use.
  * @param stats_scope the stats scope for metrics.
+ * @param final_stats_scope an optional prebuilt final scope. When provided, metrics are created
+ * directly in this scope instead of a child of stats_scope.
  * @return a shared pointer to the new config object or an error if symbol resolution failed.
  */
 absl::StatusOr<DynamicModuleAccessLogConfigSharedPtr> newDynamicModuleAccessLogConfig(
     const absl::string_view logger_name, const absl::string_view logger_config,
     const absl::string_view metrics_namespace,
-    Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope);
+    Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope,
+    Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
 } // namespace DynamicModules
 } // namespace AccessLoggers

@@ -63,14 +63,14 @@ public:
    * @param cluster_manager the cluster manager for async HTTP callouts.
    * @param stats_scope the stats scope for metrics.
    * @param main_thread_dispatcher the main thread dispatcher for scheduling events.
+   * @param final_stats_scope an optional prebuilt final scope. When provided, metrics are created
+   * directly in this scope instead of a child of stats_scope.
    */
-  DynamicModuleNetworkFilterConfig(const absl::string_view filter_name,
-                                   const absl::string_view filter_config,
-                                   const absl::string_view metrics_namespace,
-                                   DynamicModulePtr dynamic_module,
-                                   Envoy::Upstream::ClusterManager& cluster_manager,
-                                   Stats::Scope& stats_scope,
-                                   Event::Dispatcher& main_thread_dispatcher);
+  DynamicModuleNetworkFilterConfig(
+      const absl::string_view filter_name, const absl::string_view filter_config,
+      const absl::string_view metrics_namespace, DynamicModulePtr dynamic_module,
+      Envoy::Upstream::ClusterManager& cluster_manager, Stats::Scope& stats_scope,
+      Event::Dispatcher& main_thread_dispatcher, Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
   ~DynamicModuleNetworkFilterConfig();
 
@@ -193,13 +193,11 @@ public:
 private:
   // Allow the factory function to access private members for initialization.
   friend absl::StatusOr<std::shared_ptr<DynamicModuleNetworkFilterConfig>>
-  newDynamicModuleNetworkFilterConfig(const absl::string_view filter_name,
-                                      const absl::string_view filter_config,
-                                      const absl::string_view metrics_namespace,
-                                      DynamicModulePtr dynamic_module,
-                                      Envoy::Upstream::ClusterManager& cluster_manager,
-                                      Stats::Scope& stats_scope,
-                                      Event::Dispatcher& main_thread_dispatcher);
+  newDynamicModuleNetworkFilterConfig(
+      const absl::string_view filter_name, const absl::string_view filter_config,
+      const absl::string_view metrics_namespace, DynamicModulePtr dynamic_module,
+      Envoy::Upstream::ClusterManager& cluster_manager, Stats::Scope& stats_scope,
+      Event::Dispatcher& main_thread_dispatcher, Stats::ScopeSharedPtr final_stats_scope);
 
   // The name of the filter passed in the constructor.
   const std::string filter_name_;
@@ -254,6 +252,7 @@ private:
  * @param cluster_manager the cluster manager for async HTTP callouts.
  * @param stats_scope the stats scope for metrics.
  * @param main_thread_dispatcher the main thread dispatcher for scheduling events.
+ * @param final_stats_scope an optional prebuilt final scope.
  * @return a shared pointer to the new config object or an error if the module could not be loaded.
  */
 absl::StatusOr<DynamicModuleNetworkFilterConfigSharedPtr> newDynamicModuleNetworkFilterConfig(
@@ -261,7 +260,7 @@ absl::StatusOr<DynamicModuleNetworkFilterConfigSharedPtr> newDynamicModuleNetwor
     const absl::string_view metrics_namespace,
     Extensions::DynamicModules::DynamicModulePtr dynamic_module,
     Envoy::Upstream::ClusterManager& cluster_manager, Stats::Scope& stats_scope,
-    Event::Dispatcher& main_thread_dispatcher);
+    Event::Dispatcher& main_thread_dispatcher, Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
 } // namespace NetworkFilters
 } // namespace DynamicModules

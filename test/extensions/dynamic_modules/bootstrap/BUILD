@@ -103,12 +103,18 @@ envoy_cc_test(
     data = [
         "//test/extensions/dynamic_modules/test_data/c:bootstrap_no_config_new",
         "//test/extensions/dynamic_modules/test_data/c:bootstrap_no_op",
+        "//test/extensions/dynamic_modules/test_data/c:program_init_fail",
+        "//test/extensions/dynamic_modules/test_data/rust:bootstrap_stats_test",
     ],
     deps = [
+        "//source/common/stats:allocator_lib",
+        "//source/common/stats:custom_stat_namespaces_lib",
+        "//source/common/stats:thread_local_store_lib",
         "//source/extensions/bootstrap/dynamic_modules:config",
         "//test/extensions/dynamic_modules:util",
         "//test/mocks/server:server_factory_context_mocks",
         "//test/test_common:environment_lib",
+        "//test/test_common:test_runtime_lib",
         "//test/test_common:utility_lib",
         "@envoy_api//envoy/extensions/bootstrap/dynamic_modules/v3:pkg_cc_proto",
     ],

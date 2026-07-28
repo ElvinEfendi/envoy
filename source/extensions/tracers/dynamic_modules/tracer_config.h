@@ -52,7 +52,8 @@ public:
                             const absl::string_view tracer_config,
                             const absl::string_view metrics_namespace,
                             Extensions::DynamicModules::DynamicModulePtr dynamic_module,
-                            Stats::Scope& stats_scope);
+                            Stats::Scope& stats_scope,
+                            Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
   ~DynamicModuleTracerConfig();
 
@@ -244,10 +245,12 @@ public:
   bool stat_creation_frozen_ = false;
 
 private:
-  friend absl::StatusOr<std::shared_ptr<DynamicModuleTracerConfig>> newDynamicModuleTracerConfig(
-      const absl::string_view tracer_name, const absl::string_view tracer_config,
-      const absl::string_view metrics_namespace,
-      Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope);
+  friend absl::StatusOr<std::shared_ptr<DynamicModuleTracerConfig>>
+  newDynamicModuleTracerConfig(const absl::string_view tracer_name,
+                               const absl::string_view tracer_config,
+                               const absl::string_view metrics_namespace,
+                               Extensions::DynamicModules::DynamicModulePtr dynamic_module,
+                               Stats::Scope& stats_scope, Stats::ScopeSharedPtr final_stats_scope);
 
   const std::string tracer_name_;
   const std::string tracer_config_;
@@ -269,12 +272,15 @@ using DynamicModuleTracerConfigSharedPtr = std::shared_ptr<DynamicModuleTracerCo
  * @param metrics_namespace the namespace prefix for metrics emitted by this module.
  * @param dynamic_module the dynamic module to use.
  * @param stats_scope the stats scope for metrics.
+ * @param final_stats_scope an optional prebuilt final scope. When provided, metrics are created
+ * directly in this scope instead of a child of stats_scope.
  * @return a shared pointer to the new config object or an error if symbol resolution failed.
  */
 absl::StatusOr<DynamicModuleTracerConfigSharedPtr> newDynamicModuleTracerConfig(
     const absl::string_view tracer_name, const absl::string_view tracer_config,
     const absl::string_view metrics_namespace,
-    Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope);
+    Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope,
+    Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
 /**
  * DynamicModuleSpan wraps an in-module span and implements the Tracing::Span interface.

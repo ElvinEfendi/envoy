@@ -6,6 +6,7 @@
 #include "source/common/runtime/runtime_features.h"
 #include "source/extensions/dynamic_modules/dynamic_module_stats.h"
 #include "source/extensions/dynamic_modules/dynamic_modules.h"
+#include "source/extensions/dynamic_modules/stats_scope.h"
 #include "source/extensions/load_balancing_policies/dynamic_modules/load_balancer.h"
 
 namespace Envoy {
@@ -68,17 +69,25 @@ Factory::loadConfig(Server::Configuration::ServerFactoryContext& context,
   const auto& typed_config = dynamic_cast<const DynamicModulesLbProto&>(config);
   const auto& module_config = typed_config.dynamic_module_config();
 
+  auto stats_scope_or_error = Envoy::Extensions::DynamicModules::createStatsScope(
+      module_config, DefaultMetricsNamespace,
+      Envoy::Extensions::DynamicModules::DynamicModulesStatsScopeDomain, context.serverScope(),
+      context);
+  if (!stats_scope_or_error.ok()) {
+    Envoy::Extensions::DynamicModules::incrementLoadFailure(
+        context, typed_config.lb_policy_name(),
+        Envoy::Extensions::DynamicModules::ConfigInitErrorStat);
+    return stats_scope_or_error.status();
+  }
+  Envoy::Extensions::DynamicModules::DynamicModuleStatsScope stats_scope =
+      std::move(stats_scope_or_error.value());
+
   // Load balancing policies do not support remote module sources, so no init manager or async
   // callback is passed; only the synchronous local-file and by-name paths can succeed here.
   auto load_result = Envoy::Extensions::DynamicModules::newDynamicModuleByConfig(
       module_config, typed_config.lb_policy_name(), context);
   RETURN_IF_NOT_OK_REF(load_result.status());
   auto dynamic_module = std::move(load_result->loaded);
-
-  // Use configured metrics namespace or fall back to the default.
-  const std::string metrics_namespace = module_config.metrics_namespace().empty()
-                                            ? std::string(DefaultMetricsNamespace)
-                                            : module_config.metrics_namespace();
 
   // Create the load balancer configuration.
   std::string config_bytes;
@@ -92,9 +101,9 @@ Factory::loadConfig(Server::Configuration::ServerFactoryContext& context,
     }
     config_bytes = std::move(config_or_error.value());
   }
-  auto lb_config_or_error =
-      DynamicModuleLbConfig::create(typed_config.lb_policy_name(), config_bytes, metrics_namespace,
-                                    std::move(dynamic_module), context.serverScope());
+  auto lb_config_or_error = DynamicModuleLbConfig::create(
+      typed_config.lb_policy_name(), config_bytes, stats_scope.prefix, std::move(dynamic_module),
+      context.serverScope(), stats_scope.scope);
   if (!lb_config_or_error.ok()) {
     Envoy::Extensions::DynamicModules::incrementLoadFailure(
         context, typed_config.lb_policy_name(),
@@ -107,9 +116,13 @@ Factory::loadConfig(Server::Configuration::ServerFactoryContext& context,
   // When the runtime guard is enabled, register the metrics namespace as a custom stat namespace.
   // This causes the namespace prefix to be stripped from prometheus output and no envoy_ prefix
   // is added. This is the legacy behavior for backward compatibility.
-  if (Runtime::runtimeFeatureEnabled(
+  if (module_config.stats_scope().prefix().empty() &&
+      Runtime::runtimeFeatureEnabled(
           "envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix")) {
-    context.api().customStatNamespaces().registerStatNamespace(metrics_namespace);
+    const absl::string_view legacy_namespace = module_config.metrics_namespace().empty()
+                                                   ? DefaultMetricsNamespace
+                                                   : module_config.metrics_namespace();
+    context.api().customStatNamespaces().registerStatNamespace(legacy_namespace);
   }
 
   return std::make_unique<TypedDynamicModuleLbConfig>(std::move(lb_config_or_error.value()));

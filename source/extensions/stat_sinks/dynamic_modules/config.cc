@@ -8,6 +8,7 @@
 #include "source/common/protobuf/utility.h"
 #include "source/extensions/dynamic_modules/dynamic_module_stats.h"
 #include "source/extensions/dynamic_modules/dynamic_modules.h"
+#include "source/extensions/dynamic_modules/stats_scope.h"
 #include "source/extensions/stat_sinks/dynamic_modules/sink.h"
 
 namespace Envoy {
@@ -22,6 +23,19 @@ absl::StatusOr<Stats::SinkPtr> DynamicModuleStatsSinkFactory::createStatsSink(
       config, server.messageValidationContext().staticValidationVisitor());
 
   const auto& module_config = proto_config.dynamic_module_config();
+
+  Stats::ScopeSharedPtr final_stats_scope;
+  if (module_config.has_stats_scope()) {
+    auto stats_scope_or_error = Extensions::DynamicModules::createStatsScope(
+        module_config, /*default_prefix=*/"",
+        Extensions::DynamicModules::DynamicModulesStatsScopeDomain, server.scope(), server);
+    if (!stats_scope_or_error.ok()) {
+      Extensions::DynamicModules::incrementLoadFailure(
+          server, proto_config.sink_name(), Extensions::DynamicModules::ConfigInitErrorStat);
+      return stats_scope_or_error.status();
+    }
+    final_stats_scope = std::move(stats_scope_or_error->scope);
+  }
 
   // Stats sinks do not support remote module sources, so no init manager or async callback is
   // passed; only the synchronous local-file and by-name paths can succeed here.
@@ -43,7 +57,8 @@ absl::StatusOr<Stats::SinkPtr> DynamicModuleStatsSinkFactory::createStatsSink(
   }
 
   auto sink_config = newDynamicModuleStatsSinkConfig(proto_config.sink_name(), sink_config_str,
-                                                     std::move(dynamic_module), server);
+                                                     std::move(dynamic_module), server,
+                                                     std::move(final_stats_scope));
   if (!sink_config.ok()) {
     Extensions::DynamicModules::incrementLoadFailure(
         server, proto_config.sink_name(), Extensions::DynamicModules::ConfigInitErrorStat);

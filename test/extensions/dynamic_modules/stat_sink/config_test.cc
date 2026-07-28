@@ -2,6 +2,8 @@
 #include "envoy/registry/registry.h"
 #include "envoy/server/configuration.h"
 
+#include "source/common/stats/allocator.h"
+#include "source/common/stats/thread_local_store.h"
 #include "source/extensions/stat_sinks/dynamic_modules/config.h"
 
 #include "test/extensions/dynamic_modules/util.h"
@@ -88,6 +90,73 @@ sink_config:
   // The happy path emits no load-failure counters.
   EXPECT_EQ(0U, failureCounter(context_.serverScope(), "module_load_error", "test_sink"));
   EXPECT_EQ(0U, failureCounter(context_.serverScope(), "config_init_error", "test_sink"));
+}
+
+TEST_F(DynamicModuleStatsSinkFactoryTest, StatsScopeValidationPrecedesModuleInitialization) {
+  const std::string yaml = R"EOF(
+dynamic_module_config:
+  name: nonexistent_module
+  stats_scope:
+    enable_eviction: true
+sink_name: test_sink
+)EOF";
+
+  envoy::extensions::stat_sinks::dynamic_modules::v3::DynamicModuleStatsSink proto_config;
+  TestUtility::loadFromYaml(yaml, proto_config);
+
+  auto sink_or_error = factory_.createStatsSink(proto_config, context_);
+  EXPECT_THAT(sink_or_error, HasStatusMessage(testing::HasSubstr(
+                                 "Dynamic modules do not support stats_scope.enable_eviction")));
+  EXPECT_EQ(1U, failureCounter(context_.serverScope(), "config_init_error", "test_sink"));
+  EXPECT_EQ(0U, failureCounter(context_.serverScope(), "module_load_error", "test_sink"));
+}
+
+TEST_F(DynamicModuleStatsSinkFactoryTest, ExplicitStatsScopeIsFinalForModuleMetrics) {
+  Stats::SymbolTableImpl symbol_table;
+  Stats::Allocator allocator(symbol_table);
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr root_scope = stats_store.rootScope();
+  ON_CALL(context_, scope()).WillByDefault(testing::ReturnRef(*root_scope));
+  ON_CALL(context_, serverScope()).WillByDefault(testing::ReturnRef(*root_scope));
+
+  const std::string yaml = R"EOF(
+dynamic_module_config:
+  name: stat_sink_no_op
+  do_not_close: true
+  stats_scope:
+    prefix: bounded
+    max_gauges: 0
+sink_name: stats_scope_test
+)EOF";
+
+  envoy::extensions::stat_sinks::dynamic_modules::v3::DynamicModuleStatsSink proto_config;
+  TestUtility::loadFromYaml(yaml, proto_config);
+
+  auto sink_or_error = factory_.createStatsSink(proto_config, context_);
+  ASSERT_THAT(sink_or_error, IsOkAndHolds(::testing::NotNull()));
+  EXPECT_EQ(nullptr, TestUtility::findGauge(stats_store, "bounded.defined_gauge"));
+  auto overflow = TestUtility::findCounter(stats_store, "server.stats_overflow.gauge");
+  ASSERT_NE(nullptr, overflow);
+  EXPECT_EQ(1U, overflow->value());
+}
+
+TEST_F(DynamicModuleStatsSinkFactoryTest, MetricsNamespaceWithoutStatsScopePreservesLegacyPrefix) {
+  const std::string yaml = R"EOF(
+dynamic_module_config:
+  name: stat_sink_no_op
+  do_not_close: true
+  metrics_namespace: ignored_without_stats_scope
+sink_name: stats_scope_test
+)EOF";
+
+  envoy::extensions::stat_sinks::dynamic_modules::v3::DynamicModuleStatsSink proto_config;
+  TestUtility::loadFromYaml(yaml, proto_config);
+
+  auto sink_or_error = factory_.createStatsSink(proto_config, context_);
+  ASSERT_THAT(sink_or_error, IsOkAndHolds(::testing::NotNull()));
+  EXPECT_NE(nullptr, TestUtility::findGauge(context_.store_, "defined_gauge"));
+  EXPECT_EQ(nullptr,
+            TestUtility::findGauge(context_.store_, "ignored_without_stats_scope.defined_gauge"));
 }
 
 // Load the module via the ``module.local.filename`` data source instead of by name.

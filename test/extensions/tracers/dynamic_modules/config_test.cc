@@ -1,7 +1,11 @@
+#include <vector>
+
 #include "envoy/extensions/tracers/dynamic_modules/v3/dynamic_modules.pb.h"
 
 #include "source/common/protobuf/protobuf.h"
+#include "source/common/stats/allocator.h"
 #include "source/common/stats/custom_stat_namespaces_impl.h"
+#include "source/common/stats/thread_local_store.h"
 #include "source/extensions/tracers/dynamic_modules/config.h"
 
 #include "test/extensions/dynamic_modules/util.h"
@@ -88,6 +92,46 @@ TEST_F(DynamicModuleTracerFactoryTest, CreateTracerDriverRemoteSourceRejected) {
   proto_config.set_tracer_name("test_tracer");
 
   EXPECT_THROW(factory.createTracerDriver(proto_config, context_), EnvoyException);
+}
+
+TEST_F(DynamicModuleTracerFactoryTest, StatsScopeValidationPrecedesModuleInitialization) {
+  struct TestCase {
+    std::string yaml;
+    std::string expected_error;
+  };
+  const std::vector<TestCase> test_cases = {
+      {R"EOF(
+dynamic_module_config:
+  name: program_init_fail
+  stats_scope:
+    enable_eviction: true
+tracer_name: test_tracer
+)EOF",
+       "Dynamic modules do not support stats_scope.enable_eviction"},
+      {R"EOF(
+dynamic_module_config:
+  name: program_init_fail
+  metrics_namespace: legacy
+  stats_scope:
+    prefix: scoped
+tracer_name: test_tracer
+)EOF",
+       "metrics_namespace and stats_scope.prefix cannot both be non-empty"},
+  };
+
+  DynamicModuleTracerFactory factory;
+  for (const TestCase& test_case : test_cases) {
+    NiceMock<Server::Configuration::MockTracerFactoryContext> context;
+    envoy::extensions::tracers::dynamic_modules::v3::DynamicModuleTracer proto_config;
+    TestUtility::loadFromYaml(test_case.yaml, proto_config);
+
+    EXPECT_THROW_WITH_REGEX(factory.createTracerDriver(proto_config, context), EnvoyException,
+                            test_case.expected_error);
+    EXPECT_EQ(1U, failureCounter(context.server_factory_context_.serverScope(), "config_init_error",
+                                 "test_tracer"));
+    EXPECT_EQ(0U, failureCounter(context.server_factory_context_.serverScope(), "module_load_error",
+                                 "test_tracer"));
+  }
 }
 
 TEST_F(DynamicModuleTracerFactoryTest, CreateTracerDriverModuleNotFound) {
@@ -179,6 +223,41 @@ TEST_F(DynamicModuleTracerFactoryTest, CreateTracerDriverWithCustomMetricsNamesp
   EXPECT_NE(driver, nullptr);
 }
 
+TEST_F(DynamicModuleTracerFactoryTest, StatsScopeIsFinalScopeForModuleMetrics) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix", "true"}});
+  Stats::SymbolTableImpl symbol_table;
+  Stats::Allocator allocator(symbol_table);
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr root_scope = stats_store.rootScope();
+  ON_CALL(context_.server_factory_context_, scope()).WillByDefault(testing::ReturnRef(*root_scope));
+  ON_CALL(context_.server_factory_context_, serverScope())
+      .WillByDefault(testing::ReturnRef(*root_scope));
+  Stats::CustomStatNamespacesImpl custom_stat_namespaces;
+  ON_CALL(context_.server_factory_context_.api_, customStatNamespaces())
+      .WillByDefault(testing::ReturnRef(custom_stat_namespaces));
+
+  DynamicModuleTracerFactory factory;
+  envoy::extensions::tracers::dynamic_modules::v3::DynamicModuleTracer proto_config;
+  proto_config.mutable_dynamic_module_config()->set_name("tracer_no_op");
+  proto_config.mutable_dynamic_module_config()->mutable_stats_scope()->set_prefix("bounded_tracer");
+  proto_config.mutable_dynamic_module_config()
+      ->mutable_stats_scope()
+      ->mutable_max_counters()
+      ->set_value(0);
+  proto_config.set_tracer_name("stats_test");
+
+  auto driver = factory.createTracerDriver(proto_config, context_);
+
+  ASSERT_NE(driver, nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "bounded_tracer.tracer_config_total"), nullptr);
+  ASSERT_NE(TestUtility::findCounter(stats_store, "server.stats_overflow.counter"), nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.counter")->value(), 1);
+  EXPECT_FALSE(custom_stat_namespaces.registered("bounded_tracer"));
+  EXPECT_FALSE(custom_stat_namespaces.registered("dynamicmodulescustom"));
+}
+
 TEST_F(DynamicModuleTracerFactoryTest, RegisterStatNamespaceWithRuntimeGuard) {
   TestScopedRuntime scoped_runtime;
   scoped_runtime.mergeValues(
@@ -193,11 +272,18 @@ TEST_F(DynamicModuleTracerFactoryTest, RegisterStatNamespaceWithRuntimeGuard) {
   ::envoy::extensions::tracers::dynamic_modules::v3::DynamicModuleTracer proto_config;
   proto_config.mutable_dynamic_module_config()->set_name("tracer_no_op");
   proto_config.mutable_dynamic_module_config()->set_metrics_namespace("my_custom_namespace");
-  proto_config.set_tracer_name("test_tracer");
+  proto_config.mutable_dynamic_module_config()
+      ->mutable_stats_scope()
+      ->mutable_max_counters()
+      ->set_value(1);
+  proto_config.set_tracer_name("stats_test");
 
   auto driver = factory.createTracerDriver(proto_config, context_);
   EXPECT_NE(driver, nullptr);
 
+  EXPECT_NE(TestUtility::findCounter(context_.server_factory_context_.serverScope().store(),
+                                     "my_custom_namespace.tracer_config_total"),
+            nullptr);
   EXPECT_TRUE(custom_stat_namespaces.registered("my_custom_namespace"));
 }
 

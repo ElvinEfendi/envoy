@@ -126,27 +126,36 @@ under the configurable :ref:`metrics_namespace
 <envoy_v3_api_field_extensions.dynamic_modules.v3.DynamicModuleConfig.metrics_namespace>`
 (``dynamicmodulescustom`` by default), separately from the ``dynamic_modules.`` namespace above.
 
-HTTP filter custom metrics can optionally use :ref:`stats_scope
+Dynamic-module custom metrics can optionally use :ref:`stats_scope
 <envoy_v3_api_field_extensions.dynamic_modules.v3.DynamicModuleConfig.stats_scope>` to limit the
 number of counters, gauges, and histograms retained by Envoy. No finite limit is applied by
 default. Fixed metrics and metric-vector label combinations consume the same per-type budget. These
 limits do not bound arbitrary module memory, metric-name or label bytes, or transient allocation.
+HTTP per-route configurations and extension points without module-defined metric callbacks ignore
+``stats_scope``.
 
 ``stats_scope.prefix`` and ``metrics_namespace`` cannot both be non-empty. The selected prefix is,
 in order of precedence, ``stats_scope.prefix``, ``metrics_namespace``, or the existing extension
 default. Envoy sanitizes the selected prefix before using it in the scope and shared-scope identity.
 An explicit ``stats_scope.prefix`` is not registered as a process-wide custom Prometheus namespace;
 the existing ``metrics_namespace`` and default paths preserve their legacy registration behavior.
-A scope with an empty ``sharing_name`` is distinct and remains under the HTTP filter's existing
+Cluster and stats-sink configurations preserve their previous scope behavior, including their
+previous treatment of ``metrics_namespace``, when ``stats_scope`` is absent. UDP listener filters
+append the filter name to the legacy ``metrics_namespace`` or default prefix; an explicit
+``stats_scope.prefix`` is already the complete prefix and does not append the filter name.
+A scope with an empty ``sharing_name`` is distinct and remains under the extension point's existing
 parent scope. A non-empty ``sharing_name`` creates a process-wide scope rooted at the server scope.
 Configurations share that scope only when their complete effective :ref:`Scope
 <envoy_v3_api_msg_type.v3.Scope>` configuration matches exactly. Re-rooting a shared scope can
-change its fully qualified metric names. Admitted stats remain in a shared budget until every
-configuration using the shared scope is destroyed.
+change its fully qualified metric names. Sharing spans dynamic-module extension-point types, so
+admitted stats remain in a shared budget until every configuration of any type using the shared
+scope is destroyed. For UDP listener filters, an implicit prefix includes the filter name and can
+therefore be shared only by filters with the same name; an explicit prefix permits sharing across
+filter names.
 
-HTTP dynamic modules cannot enable stat eviction because metric handles retain direct references to
-their stats. The HTTP filter rejects configurations with ``stats_scope.enable_eviction`` set to
-``true``.
+Dynamic modules cannot enable stat eviction because metric handles retain direct references to
+their stats. Metric-producing extension points reject configurations with
+``stats_scope.enable_eviction`` set to ``true``.
 After a per-type limit is reached, a new metric lookup receives Envoy's no-op stat while the ABI
 call still returns success. Existing metrics continue to update. Each rejected lookup or creation
 attempt increments ``server.stats_overflow.counter``, ``server.stats_overflow.gauge``, or

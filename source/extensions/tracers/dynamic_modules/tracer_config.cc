@@ -37,8 +37,11 @@ envoy_dynamic_module_type_trace_reason toAbiReason(Tracing::Reason reason) {
 DynamicModuleTracerConfig::DynamicModuleTracerConfig(
     const absl::string_view tracer_name, const absl::string_view tracer_config,
     const absl::string_view metrics_namespace,
-    Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope)
-    : stats_scope_(stats_scope.createScope(absl::StrCat(metrics_namespace, "."))),
+    Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope,
+    Stats::ScopeSharedPtr final_stats_scope)
+    : stats_scope_(final_stats_scope != nullptr
+                       ? std::move(final_stats_scope)
+                       : stats_scope.createScope(absl::StrCat(metrics_namespace, "."))),
       stat_name_pool_(stats_scope_->symbolTable()), tracer_name_(tracer_name),
       tracer_config_(tracer_config), dynamic_module_(std::move(dynamic_module)) {}
 
@@ -48,14 +51,17 @@ DynamicModuleTracerConfig::~DynamicModuleTracerConfig() {
   }
 }
 
-absl::StatusOr<DynamicModuleTracerConfigSharedPtr> newDynamicModuleTracerConfig(
-    const absl::string_view tracer_name, const absl::string_view tracer_config,
-    const absl::string_view metrics_namespace,
-    Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope) {
+absl::StatusOr<DynamicModuleTracerConfigSharedPtr>
+newDynamicModuleTracerConfig(const absl::string_view tracer_name,
+                             const absl::string_view tracer_config,
+                             const absl::string_view metrics_namespace,
+                             Extensions::DynamicModules::DynamicModulePtr dynamic_module,
+                             Stats::Scope& stats_scope, Stats::ScopeSharedPtr final_stats_scope) {
   ASSERT_IS_MAIN_OR_TEST_THREAD();
 
   auto config = std::make_shared<DynamicModuleTracerConfig>(
-      tracer_name, tracer_config, metrics_namespace, std::move(dynamic_module), stats_scope);
+      tracer_name, tracer_config, metrics_namespace, std::move(dynamic_module), stats_scope,
+      std::move(final_stats_scope));
 
 #define RESOLVE_OR_RETURN(field, symbol)                                                           \
   {                                                                                                \

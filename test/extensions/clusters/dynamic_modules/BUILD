@@ -23,6 +23,8 @@ envoy_cc_test(
         "//source/common/config:metadata_lib",
         "//source/common/http:message_lib",
         "//source/common/router:string_accessor_lib",
+        "//source/common/stats:allocator_lib",
+        "//source/common/stats:thread_local_store_lib",
         "//source/common/stream_info:filter_state_lib",
         "//source/extensions/clusters/dynamic_modules:cluster_lib",
         "//source/extensions/dynamic_modules:abi_impl",

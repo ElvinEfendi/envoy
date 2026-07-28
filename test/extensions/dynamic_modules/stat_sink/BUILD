@@ -28,6 +28,8 @@ envoy_cc_test(
     ],
     deps = [
         "//envoy/registry",
+        "//source/common/stats:allocator_lib",
+        "//source/common/stats:thread_local_store_lib",
         "//source/extensions/stat_sinks/dynamic_modules:config",
         "//test/extensions/dynamic_modules:util",
         "//test/mocks/server:server_factory_context_mocks",
