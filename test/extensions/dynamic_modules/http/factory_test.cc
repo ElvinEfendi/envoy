@@ -1,10 +1,14 @@
 #include "envoy/extensions/filters/http/dynamic_modules/v3/dynamic_modules.pb.h"
 
+#include "source/common/stats/allocator.h"
+#include "source/common/stats/custom_stat_namespaces_impl.h"
+#include "source/common/stats/thread_local_store.h"
 #include "source/extensions/filters/http/dynamic_modules/factory.h"
 
 #include "test/extensions/dynamic_modules/util.h"
 #include "test/mocks/server/factory_context.h"
 #include "test/test_common/status_utility.h"
+#include "test/test_common/test_runtime.h"
 #include "test/test_common/utility.h"
 
 namespace Envoy {
@@ -69,6 +73,131 @@ filter_config:
   EXPECT_EQ(0U, failureCounter(server_scope, "config_init_error", "foo"));
   EXPECT_EQ(0U, failureCounter(server_scope, "remote_fetch_error", "foo"));
   EXPECT_EQ(0U, failureCounter(server_scope, "per_route_config_error", "foo"));
+}
+
+TEST(DynamicModuleConfigFactory, StatsScopeValidationPrecedesModuleInitialization) {
+  TestEnvironment::setEnvVar(
+      "ENVOY_DYNAMIC_MODULES_SEARCH_PATH",
+      TestEnvironment::substitute("{{ test_rundir }}/test/extensions/dynamic_modules/test_data/c"),
+      1);
+
+  struct TestCase {
+    std::string yaml;
+    std::string expected_error;
+  };
+  const std::vector<TestCase> test_cases = {
+      {R"EOF(
+dynamic_module_config:
+    name: program_init_fail
+    stats_scope:
+      enable_eviction: true
+filter_name: foo
+)EOF",
+       "Dynamic modules do not support stats_scope.enable_eviction"},
+      {R"EOF(
+dynamic_module_config:
+    name: program_init_fail
+    metrics_namespace: legacy
+    stats_scope:
+      prefix: scoped
+filter_name: foo
+)EOF",
+       "metrics_namespace and stats_scope.prefix cannot both be non-empty"},
+  };
+
+  Envoy::Server::Configuration::DynamicModuleConfigFactory factory;
+  for (const TestCase& test_case : test_cases) {
+    envoy::extensions::filters::http::dynamic_modules::v3::DynamicModuleFilter proto_config;
+    TestUtility::loadFromYamlAndValidate(test_case.yaml, proto_config);
+    NiceMock<Server::Configuration::MockFactoryContext> context;
+
+    auto result = factory.createFilterFactoryFromProto(proto_config, "", context);
+
+    EXPECT_THAT(result, HasStatus(absl::StatusCode::kInvalidArgument,
+                                  testing::HasSubstr(test_case.expected_error)));
+    EXPECT_EQ(1U,
+              failureCounter(context.server_factory_context_.scope(), "config_init_error", "foo"));
+    EXPECT_EQ(0U,
+              failureCounter(context.server_factory_context_.scope(), "module_load_error", "foo"));
+  }
+}
+
+TEST(DynamicModuleConfigFactory, StatsScopeIsFinalScopeForModuleMetrics) {
+  TestEnvironment::setEnvVar(
+      "ENVOY_DYNAMIC_MODULES_SEARCH_PATH",
+      TestEnvironment::substitute(
+          "{{ test_rundir }}/test/extensions/dynamic_modules/test_data/rust"),
+      1);
+
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix", "true"}});
+
+  Stats::SymbolTableImpl symbol_table;
+  Stats::Allocator allocator(symbol_table);
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr root_scope = stats_store.rootScope();
+
+  NiceMock<Server::Configuration::MockFactoryContext> context;
+  ON_CALL(context, scope()).WillByDefault(testing::ReturnRef(*root_scope));
+  Stats::CustomStatNamespacesImpl custom_stat_namespaces;
+  ON_CALL(context.server_factory_context_.api_, customStatNamespaces())
+      .WillByDefault(testing::ReturnRef(custom_stat_namespaces));
+
+  const std::string yaml = R"EOF(
+dynamic_module_config:
+    name: http
+    stats_scope:
+      prefix: bounded
+      max_counters: 0
+filter_name: stats_callbacks
+)EOF";
+  envoy::extensions::filters::http::dynamic_modules::v3::DynamicModuleFilter proto_config;
+  TestUtility::loadFromYamlAndValidate(yaml, proto_config);
+
+  Envoy::Server::Configuration::DynamicModuleConfigFactory factory;
+  auto result = factory.createFilterFactoryFromProto(proto_config, "", context);
+
+  ASSERT_OK(result);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "bounded.streams_total"), nullptr);
+  EXPECT_NE(TestUtility::findGauge(stats_store, "bounded.concurrent_streams"), nullptr);
+  ASSERT_NE(TestUtility::findCounter(stats_store, "server.stats_overflow.counter"), nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.counter")->value(), 1);
+  EXPECT_FALSE(custom_stat_namespaces.registered("bounded"));
+  EXPECT_FALSE(custom_stat_namespaces.registered("dynamicmodulescustom"));
+}
+
+TEST(DynamicModuleConfigFactory, StatsScopeLimitsPreserveLegacyNamespaceRegistration) {
+  TestEnvironment::setEnvVar(
+      "ENVOY_DYNAMIC_MODULES_SEARCH_PATH",
+      TestEnvironment::substitute("{{ test_rundir }}/test/extensions/dynamic_modules/test_data/c"),
+      1);
+
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix", "true"}});
+
+  NiceMock<Server::Configuration::MockFactoryContext> context;
+  Stats::CustomStatNamespacesImpl custom_stat_namespaces;
+  ON_CALL(context.server_factory_context_.api_, customStatNamespaces())
+      .WillByDefault(testing::ReturnRef(custom_stat_namespaces));
+
+  const std::string yaml = R"EOF(
+dynamic_module_config:
+    name: no_op
+    metrics_namespace: legacy_namespace
+    stats_scope:
+      max_counters: 1
+filter_name: foo
+)EOF";
+  envoy::extensions::filters::http::dynamic_modules::v3::DynamicModuleFilter proto_config;
+  TestUtility::loadFromYamlAndValidate(yaml, proto_config);
+
+  Envoy::Server::Configuration::DynamicModuleConfigFactory factory;
+  auto result = factory.createFilterFactoryFromProto(proto_config, "", context);
+
+  ASSERT_OK(result);
+  EXPECT_TRUE(custom_stat_namespaces.registered("legacy_namespace"));
 }
 
 TEST(DynamicModuleConfigFactory, LoadOKPerRoute) {

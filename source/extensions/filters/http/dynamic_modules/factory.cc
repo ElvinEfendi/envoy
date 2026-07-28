@@ -4,6 +4,7 @@
 #include "source/common/runtime/runtime_features.h"
 #include "source/extensions/dynamic_modules/dynamic_module_stats.h"
 #include "source/extensions/dynamic_modules/dynamic_modules.h"
+#include "source/extensions/dynamic_modules/stats_scope.h"
 #include "source/extensions/filters/http/dynamic_modules/filter.h"
 #include "source/extensions/filters/http/dynamic_modules/filter_config.h"
 
@@ -15,9 +16,11 @@ namespace {
 
 // Builds a FilterFactoryCb from an already-loaded DynamicModule.
 // Extracted because both the synchronous path and the remote fetch callback need it.
-absl::StatusOr<Http::FilterFactoryCb> buildFilterFactoryCallback(
-    Extensions::DynamicModules::DynamicModulePtr dynamic_module, const FilterConfig& proto_config,
-    Server::Configuration::ServerFactoryContext& context, Stats::Scope& scope) {
+absl::StatusOr<Http::FilterFactoryCb>
+buildFilterFactoryCallback(Extensions::DynamicModules::DynamicModulePtr dynamic_module,
+                           const FilterConfig& proto_config,
+                           Server::Configuration::ServerFactoryContext& context,
+                           const Extensions::DynamicModules::DynamicModuleStatsScope& stats_scope) {
 
   std::string config;
   if (proto_config.has_filter_config()) {
@@ -30,18 +33,13 @@ absl::StatusOr<Http::FilterFactoryCb> buildFilterFactoryCallback(
     config = std::move(config_or_error.value());
   }
 
-  // Use configured metrics namespace or fall back to the default.
-  const std::string metrics_namespace =
-      proto_config.dynamic_module_config().metrics_namespace().empty()
-          ? std::string(Extensions::DynamicModules::HttpFilters::DefaultMetricsNamespace)
-          : proto_config.dynamic_module_config().metrics_namespace();
-
   absl::StatusOr<
       Envoy::Extensions::DynamicModules::HttpFilters::DynamicModuleHttpFilterConfigSharedPtr>
       filter_config =
           Envoy::Extensions::DynamicModules::HttpFilters::newDynamicModuleHttpFilterConfig(
-              proto_config.filter_name(), config, metrics_namespace, proto_config.terminal_filter(),
-              std::move(dynamic_module), scope, context);
+              proto_config.filter_name(), config, stats_scope.prefix,
+              proto_config.terminal_filter(), std::move(dynamic_module), *stats_scope.scope,
+              context, stats_scope.scope);
 
   if (!filter_config.ok()) {
     Extensions::DynamicModules::incrementLoadFailure(
@@ -50,12 +48,18 @@ absl::StatusOr<Http::FilterFactoryCb> buildFilterFactoryCallback(
                                       std::string(filter_config.status().message()));
   }
 
-  // When the runtime guard is enabled, register the metrics namespace as a custom stat namespace.
-  // This causes the namespace prefix to be stripped from prometheus output and no envoy_ prefix
-  // is added. This is the legacy behavior for backward compatibility.
-  if (Runtime::runtimeFeatureEnabled(
+  // Preserve custom stat namespace registration for the legacy metrics_namespace/default path.
+  // stats_scope.prefix is new and may be a dotted or generic process-wide prefix, so registering it
+  // globally would strip unrelated Prometheus metric names.
+  if (proto_config.dynamic_module_config().stats_scope().prefix().empty() &&
+      Runtime::runtimeFeatureEnabled(
           "envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix")) {
-    context.api().customStatNamespaces().registerStatNamespace(metrics_namespace);
+    const auto& module_config = proto_config.dynamic_module_config();
+    const absl::string_view legacy_namespace =
+        module_config.metrics_namespace().empty()
+            ? Extensions::DynamicModules::HttpFilters::DefaultMetricsNamespace
+            : module_config.metrics_namespace();
+    context.api().customStatNamespaces().registerStatNamespace(legacy_namespace);
   }
 
   return [config = filter_config.value()](Http::FilterChainFactoryCallbacks& callbacks) -> void {
@@ -88,6 +92,17 @@ absl::StatusOr<Http::FilterFactoryCb> DynamicModuleConfigFactory::createFilterFa
 
   const auto& module_config = proto_config.dynamic_module_config();
 
+  auto stats_scope_or_error = Extensions::DynamicModules::createStatsScope(
+      module_config, Extensions::DynamicModules::HttpFilters::DefaultMetricsNamespace,
+      Extensions::DynamicModules::DynamicModulesStatsScopeDomain, scope, context);
+  if (!stats_scope_or_error.ok()) {
+    Extensions::DynamicModules::incrementLoadFailure(
+        context, proto_config.filter_name(), Extensions::DynamicModules::ConfigInitErrorStat);
+    return stats_scope_or_error.status();
+  }
+  Extensions::DynamicModules::DynamicModuleStatsScope stats_scope =
+      std::move(stats_scope_or_error.value());
+
   // Shared state for the asynchronous remote-fetch path: the filter factory callback is populated
   // after the fetch completes and then used by the per-request lambda below. The loading_state
   // (which owns the RemoteAsyncDataProvider) is held here to keep the fetch alive for its duration,
@@ -104,13 +119,13 @@ absl::StatusOr<Http::FilterFactoryCb> DynamicModuleConfigFactory::createFilterFa
 
   // Invoked on the main thread once an asynchronously fetched module finishes loading.
   auto on_loaded = [weak_state, proto_config, &context,
-                    &scope](Extensions::DynamicModules::DynamicModulePtr dynamic_module) {
+                    stats_scope](Extensions::DynamicModules::DynamicModulePtr dynamic_module) {
     auto state = weak_state.lock();
     if (!state) {
       return;
     }
     auto cb_or_error =
-        buildFilterFactoryCallback(std::move(dynamic_module), proto_config, context, scope);
+        buildFilterFactoryCallback(std::move(dynamic_module), proto_config, context, stats_scope);
     if (!cb_or_error.ok()) {
       ENVOY_LOG_TO_LOGGER(Envoy::Logger::Registry::getLog(Envoy::Logger::Id::dynamic_modules),
                           error, "Failed to create filter config from remote module: {}",
@@ -129,7 +144,8 @@ absl::StatusOr<Http::FilterFactoryCb> DynamicModuleConfigFactory::createFilterFa
 
   // Synchronous load (local file, by name, or remote cache hit): build the factory now.
   if (load_result->loaded != nullptr) {
-    return buildFilterFactoryCallback(std::move(load_result->loaded), proto_config, context, scope);
+    return buildFilterFactoryCallback(std::move(load_result->loaded), proto_config, context,
+                                      stats_scope);
   }
 
   ASSERT(load_result->async != nullptr, "Async loading state must be populated for async loads");

@@ -6,8 +6,8 @@
 #include "envoy/stream_info/filter_state.h"
 
 #include "source/common/formatter/substitution_formatter.h"
+#include "source/common/stats/scope_provider_singleton.h"
 #include "source/common/stats/symbol_table.h"
-#include "source/extensions/access_loggers/stats/scope_provider_singleton.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -177,7 +177,9 @@ StatsAccessLog::StatsAccessLog(const envoy::extensions::access_loggers::stats::v
         if (!config.stat_prefix().empty()) {
           modified_config.set_prefix(config.stat_prefix());
         }
-        return Stats::ScopeProviderSingleton::getScope(context, modified_config);
+        return Stats::ScopeProviderSingleton::getScope(context.serverFactoryContext(),
+                                                       context.statsScope(), modified_config,
+                                                       "envoy.access_loggers.stats");
       }()),
 
       stat_name_pool_(context.statsScope().symbolTable()), histograms_([&]() {

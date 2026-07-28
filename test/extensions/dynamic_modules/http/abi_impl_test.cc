@@ -2908,6 +2908,182 @@ TEST(ABIImpl, Stats) {
   EXPECT_EQ(result, envoy_dynamic_module_type_metrics_result_Frozen);
 }
 
+TEST(ABIImpl, StatsScopeLimitsApplyToFixedAndVectorMetrics) {
+  Stats::SymbolTableImpl symbol_table;
+  Stats::Allocator allocator(symbol_table);
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr root_scope = stats_store.rootScope();
+  Stats::ScopeStatsLimitSettings limits;
+  limits.max_counters = 2;
+  limits.max_gauges = 0;
+  limits.max_histograms = 0;
+  Stats::ScopeSharedPtr limited_scope =
+      root_scope->createScope("dynamicmodulescustom.", false, limits);
+
+  NiceMock<Server::Configuration::MockServerFactoryContext> context;
+  auto filter_config = std::make_shared<DynamicModuleHttpFilterConfig>(
+      "some_name", "some_config", DefaultMetricsNamespace, nullptr, *root_scope, context,
+      limited_scope);
+  DynamicModuleHttpFilter filter{filter_config, symbol_table, 0};
+
+  ASSERT_NE(TestUtility::findCounter(stats_store, "server.stats_overflow.counter"), nullptr);
+  ASSERT_NE(TestUtility::findCounter(stats_store, "server.stats_overflow.gauge"), nullptr);
+  ASSERT_NE(TestUtility::findCounter(stats_store, "server.stats_overflow.histogram"), nullptr);
+
+  const std::string fixed_counter_name{"fixed_counter"};
+  size_t fixed_counter_id;
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_define_counter(
+                filter_config.get(), {fixed_counter_name.data(), fixed_counter_name.size()},
+                nullptr, 0, &fixed_counter_id),
+            envoy_dynamic_module_type_metrics_result_Success);
+
+  const std::string counter_vec_name{"counter_vec"};
+  const std::string counter_label_name{"label"};
+  envoy_dynamic_module_type_module_buffer counter_label_name_buffer{
+      const_cast<char*>(counter_label_name.data()), counter_label_name.size()};
+  size_t counter_vec_id;
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_define_counter(
+                filter_config.get(), {counter_vec_name.data(), counter_vec_name.size()},
+                &counter_label_name_buffer, 1, &counter_vec_id),
+            envoy_dynamic_module_type_metrics_result_Success);
+
+  const std::string accepted_counter_label_value{"accepted"};
+  envoy_dynamic_module_type_module_buffer accepted_counter_label_value_buffer{
+      const_cast<char*>(accepted_counter_label_value.data()), accepted_counter_label_value.size()};
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_increment_counter(
+                &filter, counter_vec_id, &accepted_counter_label_value_buffer, 1, 3),
+            envoy_dynamic_module_type_metrics_result_Success);
+
+  Stats::CounterSharedPtr fixed_counter =
+      TestUtility::findCounter(stats_store, "dynamicmodulescustom.fixed_counter");
+  Stats::CounterSharedPtr accepted_counter_vec =
+      TestUtility::findCounter(stats_store, "dynamicmodulescustom.counter_vec.label.accepted");
+  ASSERT_NE(fixed_counter, nullptr);
+  ASSERT_NE(accepted_counter_vec, nullptr);
+  EXPECT_EQ(fixed_counter->value(), 0);
+  EXPECT_EQ(accepted_counter_vec->value(), 3);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.counter")->value(), 0);
+
+  // The fixed counter and first vector tuple consume the exact two-counter budget. A new fixed
+  // counter receives a valid ABI handle backed by Envoy's no-op counter.
+  const std::string rejected_fixed_counter_name{"rejected_fixed_counter"};
+  size_t rejected_fixed_counter_id;
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_define_counter(
+                filter_config.get(),
+                {rejected_fixed_counter_name.data(), rejected_fixed_counter_name.size()}, nullptr,
+                0, &rejected_fixed_counter_id),
+            envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "dynamicmodulescustom.rejected_fixed_counter"),
+            nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.counter")->value(), 1);
+
+  // Updating the retained no-op handle succeeds without another lookup or overflow increment.
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_increment_counter(
+                filter_config.get(), rejected_fixed_counter_id, nullptr, 0, 11),
+            envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "dynamicmodulescustom.rejected_fixed_counter"),
+            nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.counter")->value(), 1);
+
+  const std::string rejected_counter_label_value{"rejected"};
+  envoy_dynamic_module_type_module_buffer rejected_counter_label_value_buffer{
+      const_cast<char*>(rejected_counter_label_value.data()), rejected_counter_label_value.size()};
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_increment_counter(
+                filter_config.get(), counter_vec_id, &rejected_counter_label_value_buffer, 1, 13),
+            envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_EQ(
+      TestUtility::findCounter(stats_store, "dynamicmodulescustom.counter_vec.label.rejected"),
+      nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.counter")->value(), 2);
+
+  // Limit rejections are not cached. Repeating the rejected vector lookup increments overflow
+  // again.
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_increment_counter(
+                &filter, counter_vec_id, &rejected_counter_label_value_buffer, 1, 17),
+            envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_EQ(
+      TestUtility::findCounter(stats_store, "dynamicmodulescustom.counter_vec.label.rejected"),
+      nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.counter")->value(), 3);
+
+  // Existing fixed and vector stats continue updating after the budget is exhausted.
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_increment_counter(&filter, fixed_counter_id,
+                                                                        nullptr, 0, 5),
+            envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_increment_counter(
+                filter_config.get(), counter_vec_id, &accepted_counter_label_value_buffer, 1, 7),
+            envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_EQ(fixed_counter->value(), 5);
+  EXPECT_EQ(accepted_counter_vec->value(), 10);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.counter")->value(), 3);
+
+  // A zero gauge budget rejects both fixed and vector series while preserving ABI success. Exercise
+  // a stream update through the fixed no-op handle and a config-context vector lookup.
+  const std::string fixed_gauge_name{"fixed_gauge"};
+  size_t fixed_gauge_id;
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_define_gauge(
+                filter_config.get(), {fixed_gauge_name.data(), fixed_gauge_name.size()}, nullptr, 0,
+                &fixed_gauge_id),
+            envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_increment_gauge(&filter, fixed_gauge_id,
+                                                                      nullptr, 0, 19),
+            envoy_dynamic_module_type_metrics_result_Success);
+
+  const std::string gauge_vec_name{"gauge_vec"};
+  const std::string gauge_label_name{"label"};
+  envoy_dynamic_module_type_module_buffer gauge_label_name_buffer{
+      const_cast<char*>(gauge_label_name.data()), gauge_label_name.size()};
+  size_t gauge_vec_id;
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_define_gauge(
+                filter_config.get(), {gauge_vec_name.data(), gauge_vec_name.size()},
+                &gauge_label_name_buffer, 1, &gauge_vec_id),
+            envoy_dynamic_module_type_metrics_result_Success);
+  const std::string gauge_label_value{"rejected"};
+  envoy_dynamic_module_type_module_buffer gauge_label_value_buffer{
+      const_cast<char*>(gauge_label_value.data()), gauge_label_value.size()};
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_increment_gauge(
+                filter_config.get(), gauge_vec_id, &gauge_label_value_buffer, 1, 23),
+            envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_EQ(TestUtility::findGauge(stats_store, "dynamicmodulescustom.fixed_gauge"), nullptr);
+  EXPECT_EQ(TestUtility::findGauge(stats_store, "dynamicmodulescustom.gauge_vec.label.rejected"),
+            nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.gauge")->value(), 2);
+
+  // Mirror the zero-limit check for histograms, swapping the emission contexts: config for the
+  // fixed no-op handle and stream for the vector lookup.
+  const std::string fixed_histogram_name{"fixed_histogram"};
+  size_t fixed_histogram_id;
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_define_histogram(
+                filter_config.get(), {fixed_histogram_name.data(), fixed_histogram_name.size()},
+                nullptr, 0, &fixed_histogram_id),
+            envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_record_histogram_value(
+                filter_config.get(), fixed_histogram_id, nullptr, 0, 29),
+            envoy_dynamic_module_type_metrics_result_Success);
+
+  const std::string histogram_vec_name{"histogram_vec"};
+  const std::string histogram_label_name{"label"};
+  envoy_dynamic_module_type_module_buffer histogram_label_name_buffer{
+      const_cast<char*>(histogram_label_name.data()), histogram_label_name.size()};
+  size_t histogram_vec_id;
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_config_define_histogram(
+                filter_config.get(), {histogram_vec_name.data(), histogram_vec_name.size()},
+                &histogram_label_name_buffer, 1, &histogram_vec_id),
+            envoy_dynamic_module_type_metrics_result_Success);
+  const std::string histogram_label_value{"rejected"};
+  envoy_dynamic_module_type_module_buffer histogram_label_value_buffer{
+      const_cast<char*>(histogram_label_value.data()), histogram_label_value.size()};
+  EXPECT_EQ(envoy_dynamic_module_callback_http_filter_record_histogram_value(
+                &filter, histogram_vec_id, &histogram_label_value_buffer, 1, 31),
+            envoy_dynamic_module_type_metrics_result_Success);
+  EXPECT_EQ(TestUtility::findHistogram(stats_store, "dynamicmodulescustom.fixed_histogram"),
+            nullptr);
+  EXPECT_EQ(
+      TestUtility::findHistogram(stats_store, "dynamicmodulescustom.histogram_vec.label.rejected"),
+      nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.histogram")->value(), 2);
+}
+
 TEST(ABIImpl, StreamMetricLabelValuesDoNotAccumulateMemory) {
   Stats::SymbolTableImpl symbol_table;
   Stats::Allocator allocator(symbol_table);

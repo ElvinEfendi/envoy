@@ -84,12 +84,15 @@ public:
    * @param dynamic_module the dynamic module to use.
    * @param stats_scope the stats scope for metric creation.
    * @param context the server factory context.
+   * @param final_stats_scope an optional prebuilt final scope. When provided, metrics are created
+   * directly in this scope instead of a child of stats_scope.
    */
   DynamicModuleHttpFilterConfig(const absl::string_view filter_name,
                                 const absl::string_view filter_config,
                                 const absl::string_view metrics_namespace,
                                 DynamicModulePtr dynamic_module, Stats::Scope& stats_scope,
-                                Server::Configuration::ServerFactoryContext& context);
+                                Server::Configuration::ServerFactoryContext& context,
+                                Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
   ~DynamicModuleHttpFilterConfig();
 
@@ -504,13 +507,16 @@ newDynamicModuleHttpPerRouteConfig(const absl::string_view filter_name,
  * @param dynamic_module the dynamic module to use.
  * @param stats_scope the stats scope for metric creation.
  * @param context the server factory context.
+ * @param final_stats_scope an optional prebuilt final scope. When provided, metrics are created
+ * directly in this scope instead of a child of stats_scope.
  * @return a shared pointer to the new config object or an error if the module could not be loaded.
  */
 absl::StatusOr<DynamicModuleHttpFilterConfigSharedPtr> newDynamicModuleHttpFilterConfig(
     const absl::string_view filter_name, const absl::string_view filter_config,
     const absl::string_view metrics_namespace, const bool terminal_filter,
     Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope,
-    Server::Configuration::ServerFactoryContext& context);
+    Server::Configuration::ServerFactoryContext& context,
+    Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
 } // namespace HttpFilters
 } // namespace DynamicModules
