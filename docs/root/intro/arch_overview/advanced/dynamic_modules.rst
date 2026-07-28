@@ -144,8 +144,9 @@ Configurations share that scope only when their complete effective :ref:`Scope
 change its fully qualified metric names. Admitted stats remain in a shared budget until every
 configuration using the shared scope is destroyed.
 
-Dynamic modules cannot enable stat eviction because metric handles retain direct references to
-their stats. Envoy rejects configurations with ``stats_scope.enable_eviction`` set to ``true``.
+HTTP dynamic modules cannot enable stat eviction because metric handles retain direct references to
+their stats. The HTTP filter rejects configurations with ``stats_scope.enable_eviction`` set to
+``true``.
 After a per-type limit is reached, a new metric lookup receives Envoy's no-op stat while the ABI
 call still returns success. Existing metrics continue to update. Each rejected lookup or creation
 attempt increments ``server.stats_overflow.counter``, ``server.stats_overflow.gauge``, or
