@@ -15,11 +15,13 @@ envoy_cc_library(
         "background_fetch_manager.cc",
         "dynamic_module_stats.cc",
         "dynamic_modules.cc",
+        "stats_scope.cc",
     ],
     hdrs = [
         "background_fetch_manager.h",
         "dynamic_module_stats.h",
         "dynamic_modules.h",
+        "stats_scope.h",
     ],
     external_deps = ["ssl"],
     deps = [
@@ -32,6 +34,7 @@ envoy_cc_library(
         "//source/common/common:logger_lib",
         "//source/common/common:utility_lib",
         "//source/common/config:remote_data_fetcher_lib",
+        "//source/common/stats:scope_provider_singleton_lib",
         "//source/common/stats:utility_lib",
         "//source/extensions/common/wasm:remote_async_datasource_lib",
         "//source/extensions/dynamic_modules/abi",

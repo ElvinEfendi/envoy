@@ -9,6 +9,21 @@ licenses(["notice"])  # Apache 2
 envoy_package()
 
 envoy_cc_library(
+    name = "scope_provider_singleton_lib",
+    srcs = ["scope_provider_singleton.cc"],
+    hdrs = ["scope_provider_singleton.h"],
+    deps = [
+        "//envoy/server:factory_context_interface",
+        "//envoy/singleton:instance_interface",
+        "//envoy/stats:stats_interface",
+        "//source/common/common:assert_lib",
+        "@abseil-cpp//absl/container:flat_hash_map",
+        "@abseil-cpp//absl/strings",
+        "@envoy_api//envoy/type/v3:pkg_cc_proto",
+    ],
+)
+
+envoy_cc_library(
     name = "allocator_lib",
     srcs = ["allocator.cc"],
     hdrs = [

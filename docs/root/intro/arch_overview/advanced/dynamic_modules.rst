@@ -116,8 +116,8 @@ load-balancing policy, ``tracer_name`` for the tracer or ``cluster_name`` for th
   :header: Name, Type, Description
   :widths: 1, 1, 2
 
-  module_load_error, Counter, "Total dynamic modules that could not be loaded (missing or invalid module source, ``dlopen`` failure, by-name lookup miss, or a required ABI symbol could not be resolved)."
-  config_init_error, Counter, "Total configurations that failed to initialize after the module loaded successfully (the module rejected or failed to parse the supplied configuration)."
+  module_load_error, Counter, "Total dynamic modules that could not be loaded (missing or invalid module source, ``dlopen`` failure, by-name lookup miss, or an ABI symbol required for module loading could not be resolved)."
+  config_init_error, Counter, "Total configurations rejected while Envoy prepared or initialized module-specific configuration (invalid configuration, missing extension-specific ABI symbols, parse failure, or module rejection). Module load and remote-fetch failures are counted separately."
   remote_fetch_error, Counter, "Total failures fetching or loading a remote module source, including rejected cache misses when ``nack_on_cache_miss`` is set. Only the HTTP filter supports remote module sources."
   per_route_config_error, Counter, "Total per-route configurations that failed to load or initialize. Only emitted by the HTTP filter."
 
@@ -125,3 +125,31 @@ In addition to the counters above, a module may define its own custom metrics. T
 under the configurable :ref:`metrics_namespace
 <envoy_v3_api_field_extensions.dynamic_modules.v3.DynamicModuleConfig.metrics_namespace>`
 (``dynamicmodulescustom`` by default), separately from the ``dynamic_modules.`` namespace above.
+
+HTTP filter custom metrics can optionally use :ref:`stats_scope
+<envoy_v3_api_field_extensions.dynamic_modules.v3.DynamicModuleConfig.stats_scope>` to limit the
+number of counters, gauges, and histograms retained by Envoy. No finite limit is applied by
+default. Fixed metrics and metric-vector label combinations consume the same per-type budget. These
+limits do not bound arbitrary module memory, metric-name or label bytes, or transient allocation.
+
+``stats_scope.prefix`` and ``metrics_namespace`` cannot both be non-empty. The selected prefix is,
+in order of precedence, ``stats_scope.prefix``, ``metrics_namespace``, or the existing extension
+default. Envoy sanitizes the selected prefix before using it in the scope and shared-scope identity.
+An explicit ``stats_scope.prefix`` is not registered as a process-wide custom Prometheus namespace;
+the existing ``metrics_namespace`` and default paths preserve their legacy registration behavior.
+A scope with an empty ``sharing_name`` is distinct and remains under the HTTP filter's existing
+parent scope. A non-empty ``sharing_name`` creates a process-wide scope rooted at the server scope.
+Configurations share that scope only when their complete effective :ref:`Scope
+<envoy_v3_api_msg_type.v3.Scope>` configuration matches exactly. Re-rooting a shared scope can
+change its fully qualified metric names. Admitted stats remain in a shared budget until every
+configuration using the shared scope is destroyed.
+
+Dynamic modules cannot enable stat eviction because metric handles retain direct references to
+their stats. Envoy rejects configurations with ``stats_scope.enable_eviction`` set to ``true``.
+After a per-type limit is reached, a new metric lookup receives Envoy's no-op stat while the ABI
+call still returns success. Existing metrics continue to update. Each rejected lookup or creation
+attempt increments ``server.stats_overflow.counter``, ``server.stats_overflow.gauge``, or
+``server.stats_overflow.histogram`` as appropriate. A rejected fixed-metric definition retains its
+no-op handle, so later updates do not increment overflow again. Rejected metric-vector lookups are
+not memoized and increment overflow on every attempt, so modules should avoid repeatedly emitting
+over-limit label combinations.

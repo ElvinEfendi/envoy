@@ -14,19 +14,6 @@ licenses(["notice"])  # Apache 2
 envoy_package()
 
 envoy_extension_cc_test(
-    name = "scope_provider_singleton_test",
-    srcs = ["scope_provider_singleton_test.cc"],
-    extension_names = ["envoy.access_loggers.stats"],
-    deps = [
-        "//source/common/stats:symbol_table_lib",
-        "//source/extensions/access_loggers/stats:scope_provider_singleton_lib",
-        "//test/mocks/server:factory_context_mocks",
-        "//test/mocks/stats:stats_mocks",
-        "//test/test_common:utility_lib",
-    ],
-)
-
-envoy_extension_cc_test(
     name = "stats_test",
     srcs = ["stats_test.cc"],
     extension_names = ["envoy.access_loggers.stats"],

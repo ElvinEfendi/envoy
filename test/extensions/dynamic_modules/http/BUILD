@@ -56,14 +56,21 @@ envoy_cc_test(
         "//test/extensions/dynamic_modules/test_data/c:no_http_filter_stream_complete",
         "//test/extensions/dynamic_modules/test_data/c:no_op",
         "//test/extensions/dynamic_modules/test_data/c:no_op_no_optional_abi",
+        "//test/extensions/dynamic_modules/test_data/c:program_init_fail",
+        "//test/extensions/dynamic_modules/test_data/rust:http",
     ],
     # factory_context_mocks needs this.
     rbe_pool = "6gig",
     deps = [
+        "//source/common/stats:allocator_lib",
+        "//source/common/stats:custom_stat_namespaces_lib",
+        "//source/common/stats:thread_local_store_lib",
         "//source/extensions/filters/http/dynamic_modules:factory_lib",
         "//test/extensions/dynamic_modules:util",
         "//test/mocks/server:factory_context_mocks",
         "//test/test_common:status_utility_lib",
+        "//test/test_common:test_runtime_lib",
+        "//test/test_common:utility_lib",
         "@envoy_api//envoy/extensions/filters/http/dynamic_modules/v3:pkg_cc_proto",
     ],
 )

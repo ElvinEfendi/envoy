@@ -13,10 +13,12 @@ DynamicModuleHttpFilterConfig::DynamicModuleHttpFilterConfig(
     const absl::string_view filter_name, const absl::string_view filter_config,
     const absl::string_view metrics_namespace,
     Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope,
-    Server::Configuration::ServerFactoryContext& context)
+    Server::Configuration::ServerFactoryContext& context, Stats::ScopeSharedPtr final_stats_scope)
     : cluster_manager_(context.clusterManager()),
       main_thread_dispatcher_(context.mainThreadDispatcher()),
-      stats_scope_(stats_scope.createScope(absl::StrCat(metrics_namespace, "."))),
+      stats_scope_(final_stats_scope != nullptr
+                       ? std::move(final_stats_scope)
+                       : stats_scope.createScope(absl::StrCat(metrics_namespace, "."))),
       stat_name_pool_(stats_scope_->symbolTable()), filter_name_(filter_name),
       filter_config_(filter_config), metrics_namespace_(metrics_namespace),
       dynamic_module_(std::move(dynamic_module)) {}
@@ -88,7 +90,7 @@ absl::StatusOr<DynamicModuleHttpFilterConfigSharedPtr> newDynamicModuleHttpFilte
     const absl::string_view filter_name, const absl::string_view filter_config,
     const absl::string_view metrics_namespace, const bool terminal_filter,
     Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope,
-    Server::Configuration::ServerFactoryContext& context) {
+    Server::Configuration::ServerFactoryContext& context, Stats::ScopeSharedPtr final_stats_scope) {
   auto constructor =
       dynamic_module->getFunctionPointer<decltype(&envoy_dynamic_module_on_http_filter_config_new)>(
           "envoy_dynamic_module_on_http_filter_config_new");
@@ -204,7 +206,7 @@ absl::StatusOr<DynamicModuleHttpFilterConfigSharedPtr> newDynamicModuleHttpFilte
 
   auto config = std::make_shared<DynamicModuleHttpFilterConfig>(
       filter_name, filter_config, metrics_namespace, std::move(dynamic_module), stats_scope,
-      context);
+      context, std::move(final_stats_scope));
 
   const void* filter_config_envoy_ptr = (*constructor.value())(
       static_cast<void*>(config.get()), {filter_name.data(), filter_name.size()},

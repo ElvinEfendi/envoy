@@ -13,6 +13,19 @@ licenses(["notice"])  # Apache 2
 envoy_package()
 
 envoy_cc_test(
+    name = "scope_provider_singleton_test",
+    srcs = ["scope_provider_singleton_test.cc"],
+    deps = [
+        "//source/common/stats:allocator_lib",
+        "//source/common/stats:isolated_store_lib",
+        "//source/common/stats:scope_provider_singleton_lib",
+        "//source/common/stats:thread_local_store_lib",
+        "//test/mocks/server:server_factory_context_mocks",
+        "//test/mocks/stats:stats_mocks",
+    ],
+)
+
+envoy_cc_test(
     name = "allocator_test",
     srcs = ["allocator_test.cc"],
     rbe_pool = "6gig",
