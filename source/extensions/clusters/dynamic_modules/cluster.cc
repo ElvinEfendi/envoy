@@ -15,6 +15,7 @@
 #include "source/common/upstream/upstream_impl.h"
 #include "source/extensions/dynamic_modules/dynamic_module_stats.h"
 #include "source/extensions/dynamic_modules/dynamic_modules.h"
+#include "source/extensions/dynamic_modules/stats_scope.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -58,9 +59,10 @@ struct DynamicModuleThreadAwareLoadBalancer : public Upstream::ThreadAwareLoadBa
 
 absl::StatusOr<std::shared_ptr<DynamicModuleClusterConfig>> DynamicModuleClusterConfig::create(
     const std::string& cluster_name, const std::string& cluster_config,
-    Envoy::Extensions::DynamicModules::DynamicModulePtr module, Stats::Scope& stats_scope) {
-  auto config = std::shared_ptr<DynamicModuleClusterConfig>(
-      new DynamicModuleClusterConfig(cluster_name, cluster_config, std::move(module), stats_scope));
+    Envoy::Extensions::DynamicModules::DynamicModulePtr module, Stats::Scope& stats_scope,
+    Stats::ScopeSharedPtr final_stats_scope) {
+  auto config = std::shared_ptr<DynamicModuleClusterConfig>(new DynamicModuleClusterConfig(
+      cluster_name, cluster_config, std::move(module), stats_scope, std::move(final_stats_scope)));
 
   // Resolve all required function pointers from the dynamic module.
 #define RESOLVE_SYMBOL(name, type, member)                                                         \
@@ -160,8 +162,10 @@ absl::StatusOr<std::shared_ptr<DynamicModuleClusterConfig>> DynamicModuleCluster
 
 DynamicModuleClusterConfig::DynamicModuleClusterConfig(
     const std::string& cluster_name, const std::string& cluster_config,
-    Envoy::Extensions::DynamicModules::DynamicModulePtr module, Stats::Scope& stats_scope)
-    : stats_scope_(stats_scope.createScope("dynamicmodulescustom.")),
+    Envoy::Extensions::DynamicModules::DynamicModulePtr module, Stats::Scope& stats_scope,
+    Stats::ScopeSharedPtr final_stats_scope)
+    : stats_scope_(final_stats_scope != nullptr ? std::move(final_stats_scope)
+                                                : stats_scope.createScope("dynamicmodulescustom.")),
       stat_name_pool_(stats_scope_->symbolTable()), cluster_name_(cluster_name),
       cluster_config_(cluster_config), dynamic_module_(std::move(module)) {}
 
@@ -913,10 +917,25 @@ DynamicModuleClusterFactory::createClusterWithConfig(
     cluster_config_bytes = std::move(config_or_error.value());
   }
 
+  const auto& module_config = proto_config.dynamic_module_config();
+  Stats::ScopeSharedPtr final_stats_scope;
+  if (module_config.has_stats_scope()) {
+    auto stats_scope_or_error = Envoy::Extensions::DynamicModules::createStatsScope(
+        module_config, "dynamicmodulescustom",
+        Envoy::Extensions::DynamicModules::DynamicModulesStatsScopeDomain, server_scope,
+        server_context);
+    if (!stats_scope_or_error.ok()) {
+      Envoy::Extensions::DynamicModules::incrementLoadFailure(
+          server_context, proto_config.cluster_name(),
+          Envoy::Extensions::DynamicModules::ConfigInitErrorStat);
+      return stats_scope_or_error.status();
+    }
+    final_stats_scope = std::move(stats_scope_or_error->scope);
+  }
+
   // Load the dynamic module. Dynamic module clusters do not support remote module sources, so no
   // init manager or async callback is passed; only the synchronous local-file and by-name paths
   // can succeed here.
-  const auto& module_config = proto_config.dynamic_module_config();
   auto load_result = Envoy::Extensions::DynamicModules::newDynamicModuleByConfig(
       module_config, proto_config.cluster_name(), context.serverFactoryContext());
   RETURN_IF_NOT_OK_REF(load_result.status());
@@ -924,7 +943,8 @@ DynamicModuleClusterFactory::createClusterWithConfig(
 
   // Create the cluster configuration.
   auto config_or_error = DynamicModuleClusterConfig::create(
-      proto_config.cluster_name(), cluster_config_bytes, std::move(dynamic_module), server_scope);
+      proto_config.cluster_name(), cluster_config_bytes, std::move(dynamic_module), server_scope,
+      std::move(final_stats_scope));
   if (!config_or_error.ok()) {
     Envoy::Extensions::DynamicModules::incrementLoadFailure(
         server_context, proto_config.cluster_name(),

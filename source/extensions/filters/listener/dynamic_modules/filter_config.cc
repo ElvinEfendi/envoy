@@ -15,9 +15,11 @@ DynamicModuleListenerFilterConfig::DynamicModuleListenerFilterConfig(
     const absl::string_view filter_name, const absl::string_view filter_config,
     const absl::string_view metrics_namespace, DynamicModulePtr dynamic_module,
     Envoy::Upstream::ClusterManager& cluster_manager, Stats::Scope& stats_scope,
-    Event::Dispatcher& main_thread_dispatcher)
+    Event::Dispatcher& main_thread_dispatcher, Stats::ScopeSharedPtr final_stats_scope)
     : cluster_manager_(cluster_manager), main_thread_dispatcher_(main_thread_dispatcher),
-      stats_scope_(stats_scope.createScope(absl::StrCat(metrics_namespace, "."))),
+      stats_scope_(final_stats_scope != nullptr
+                       ? std::move(final_stats_scope)
+                       : stats_scope.createScope(absl::StrCat(metrics_namespace, "."))),
       stat_name_pool_(stats_scope_->symbolTable()), filter_name_(filter_name),
       filter_config_(filter_config), dynamic_module_(std::move(dynamic_module)) {}
 
@@ -37,7 +39,7 @@ absl::StatusOr<DynamicModuleListenerFilterConfigSharedPtr> newDynamicModuleListe
     const absl::string_view filter_name, const absl::string_view filter_config,
     const absl::string_view metrics_namespace, DynamicModulePtr dynamic_module,
     Envoy::Upstream::ClusterManager& cluster_manager, Stats::Scope& stats_scope,
-    Event::Dispatcher& main_thread_dispatcher) {
+    Event::Dispatcher& main_thread_dispatcher, Stats::ScopeSharedPtr final_stats_scope) {
 
   // Resolve the symbols for the listener filter using graceful error handling.
   auto on_config_new =
@@ -91,7 +93,7 @@ absl::StatusOr<DynamicModuleListenerFilterConfigSharedPtr> newDynamicModuleListe
 
   auto config = std::make_shared<DynamicModuleListenerFilterConfig>(
       filter_name, filter_config, metrics_namespace, std::move(dynamic_module), cluster_manager,
-      stats_scope, main_thread_dispatcher);
+      stats_scope, main_thread_dispatcher, std::move(final_stats_scope));
 
   // Store the resolved function pointers.
   config->on_listener_filter_config_destroy_ = on_config_destroy.value();

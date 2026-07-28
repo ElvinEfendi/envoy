@@ -13,11 +13,14 @@ envoy_cc_test(
     srcs = ["config_test.cc"],
     data = [
         "//test/extensions/dynamic_modules/test_data/c:no_op",
+        "//test/extensions/dynamic_modules/test_data/c:program_init_fail",
         "//test/extensions/dynamic_modules/test_data/c:tracer_config_fail",
         "//test/extensions/dynamic_modules/test_data/c:tracer_no_op",
     ],
     deps = [
+        "//source/common/stats:allocator_lib",
         "//source/common/stats:custom_stat_namespaces_lib",
+        "//source/common/stats:thread_local_store_lib",
         "//source/extensions/tracers/dynamic_modules:config",
         "//test/extensions/dynamic_modules:util",
         "//test/mocks/server:tracer_factory_context_mocks",
@@ -38,6 +41,7 @@ envoy_cc_test(
         "//test/extensions/dynamic_modules/test_data/c:tracer_with_values",
     ],
     deps = [
+        "//source/extensions/tracers/dynamic_modules:abi_impl",
         "//source/extensions/tracers/dynamic_modules:tracer_config_lib",
         "//test/mocks/stream_info:stream_info_mocks",
         "//test/mocks/tracing:tracing_mocks",

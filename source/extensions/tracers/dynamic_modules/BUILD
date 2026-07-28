@@ -42,6 +42,7 @@ envoy_cc_extension(
         "//envoy/server:tracer_config_interface",
         "//source/common/config:utility_lib",
         "//source/common/protobuf:utility_lib",
+        "//source/extensions/dynamic_modules:dynamic_modules_lib",
         "@envoy_api//envoy/extensions/tracers/dynamic_modules/v3:pkg_cc_proto",
     ],
 )

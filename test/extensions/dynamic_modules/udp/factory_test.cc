@@ -1,5 +1,9 @@
+#include "source/common/stats/allocator.h"
 #include "source/common/stats/custom_stat_namespaces_impl.h"
+#include "source/common/stats/thread_local_store.h"
+#include "source/extensions/dynamic_modules/abi/abi.h"
 #include "source/extensions/filters/udp/dynamic_modules/factory.h"
+#include "source/extensions/filters/udp/dynamic_modules/filter.h"
 
 #include "test/extensions/dynamic_modules/util.h"
 #include "test/mocks/server/listener_factory_context.h"
@@ -28,6 +32,7 @@ public:
 
 // Pull the shared dynamic-modules test helper into scope.
 using ::Envoy::Extensions::DynamicModules::failureCounter;
+using ::testing::Invoke;
 
 TEST_F(DynamicModuleUdpListenerFilterFactoryTest, ValidConfig) {
   NiceMock<Server::Configuration::MockListenerFactoryContext> context;
@@ -102,6 +107,29 @@ filter_name: test_filter
                           EnvoyException, "Failed to load.*");
 
   EXPECT_EQ(1U, failureCounter(context.server_factory_context_.serverScope(), "module_load_error",
+                               "test_filter"));
+}
+
+TEST_F(DynamicModuleUdpListenerFilterFactoryTest,
+       StatsScopeValidationPrecedesModuleInitialization) {
+  NiceMock<Server::Configuration::MockListenerFactoryContext> context;
+  const std::string yaml = R"EOF(
+dynamic_module_config:
+  name: nonexistent_module
+  stats_scope:
+    enable_eviction: true
+filter_name: test_filter
+)EOF";
+
+  envoy::extensions::filters::udp::dynamic_modules::v3::DynamicModuleUdpListenerFilter proto_config;
+  TestUtility::loadFromYaml(yaml, proto_config);
+
+  EXPECT_THROW_WITH_MESSAGE(factory_.createFilterFactoryFromProto(proto_config, context),
+                            EnvoyException,
+                            "Dynamic modules do not support stats_scope.enable_eviction");
+  EXPECT_EQ(1U, failureCounter(context.server_factory_context_.serverScope(), "config_init_error",
+                               "test_filter"));
+  EXPECT_EQ(0U, failureCounter(context.server_factory_context_.serverScope(), "module_load_error",
                                "test_filter"));
 }
 
@@ -232,6 +260,8 @@ dynamic_module_config:
   name: udp_no_op
   do_not_close: true
   metrics_namespace: custom_namespace
+  stats_scope:
+    max_counters: 1
 filter_name: test_filter
 )EOF";
 
@@ -240,8 +270,100 @@ filter_name: test_filter
 
   auto callback = factory_.createFilterFactoryFromProto(proto_config, context);
 
-  // Verify the custom namespace was registered.
+  NiceMock<Network::MockUdpListenerFilterManager> filter_manager;
+  NiceMock<Network::MockUdpReadFilterCallbacks> read_callbacks;
+  NiceMock<Event::MockDispatcher> worker_thread_dispatcher{"worker_0"};
+  ON_CALL(read_callbacks.udp_listener_, dispatcher())
+      .WillByDefault(testing::ReturnRef(worker_thread_dispatcher));
+
+  Network::UdpListenerReadFilterPtr filter;
+  EXPECT_CALL(filter_manager, addReadFilter_(testing::_))
+      .WillOnce(Invoke([&filter](Network::UdpListenerReadFilterPtr& installed_filter) {
+        filter = std::move(installed_filter);
+      }));
+  callback(filter_manager, read_callbacks);
+
+  auto* dynamic_filter = dynamic_cast<DynamicModuleUdpListenerFilter*>(filter.get());
+  ASSERT_NE(nullptr, dynamic_filter);
+  DynamicModuleUdpListenerFilterConfig& filter_config = dynamic_filter->getFilterConfig();
+  filter_config.stat_creation_frozen_ = false;
+  size_t counter_id = 0;
+  EXPECT_EQ(envoy_dynamic_module_type_metrics_result_Success,
+            envoy_dynamic_module_callback_udp_listener_filter_config_define_counter(
+                &filter_config, {const_cast<char*>("accepted"), 8}, &counter_id));
+
+  EXPECT_NE(nullptr,
+            TestUtility::findCounter(context.store_, "custom_namespace.test_filter.accepted"));
   EXPECT_TRUE(custom_stat_namespaces.registered("custom_namespace"));
+  EXPECT_FALSE(custom_stat_namespaces.registered("custom_namespace.test_filter"));
+}
+
+TEST_F(DynamicModuleUdpListenerFilterFactoryTest, ExplicitStatsScopeIsFinalAndNotRegistered) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix", "true"}});
+
+  NiceMock<Server::Configuration::MockListenerFactoryContext> context;
+  Stats::SymbolTableImpl symbol_table;
+  Stats::Allocator allocator(symbol_table);
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr root_scope = stats_store.rootScope();
+  ON_CALL(context, scope()).WillByDefault(testing::ReturnRef(*root_scope));
+  ON_CALL(context.server_factory_context_, scope()).WillByDefault(testing::ReturnRef(*root_scope));
+  ON_CALL(context.server_factory_context_, serverScope())
+      .WillByDefault(testing::ReturnRef(*root_scope));
+  Stats::CustomStatNamespacesImpl custom_stat_namespaces;
+  ON_CALL(context.server_factory_context_.api_, customStatNamespaces())
+      .WillByDefault(testing::ReturnRef(custom_stat_namespaces));
+
+  const std::string yaml = R"EOF(
+dynamic_module_config:
+  name: udp_no_op
+  do_not_close: true
+  stats_scope:
+    prefix: bounded
+    max_counters: 1
+filter_name: test_filter
+)EOF";
+  envoy::extensions::filters::udp::dynamic_modules::v3::DynamicModuleUdpListenerFilter proto_config;
+  TestUtility::loadFromYaml(yaml, proto_config);
+
+  auto callback = factory_.createFilterFactoryFromProto(proto_config, context);
+  NiceMock<Network::MockUdpListenerFilterManager> filter_manager;
+  NiceMock<Network::MockUdpReadFilterCallbacks> read_callbacks;
+  NiceMock<Event::MockDispatcher> worker_thread_dispatcher{"worker_0"};
+  ON_CALL(read_callbacks.udp_listener_, dispatcher())
+      .WillByDefault(testing::ReturnRef(worker_thread_dispatcher));
+
+  Network::UdpListenerReadFilterPtr filter;
+  EXPECT_CALL(filter_manager, addReadFilter_(testing::_))
+      .WillOnce(Invoke([&filter](Network::UdpListenerReadFilterPtr& installed_filter) {
+        filter = std::move(installed_filter);
+      }));
+  callback(filter_manager, read_callbacks);
+
+  auto* dynamic_filter = dynamic_cast<DynamicModuleUdpListenerFilter*>(filter.get());
+  ASSERT_NE(nullptr, dynamic_filter);
+  DynamicModuleUdpListenerFilterConfig& filter_config = dynamic_filter->getFilterConfig();
+  filter_config.stat_creation_frozen_ = false;
+  size_t counter_id = 0;
+  EXPECT_EQ(envoy_dynamic_module_type_metrics_result_Success,
+            envoy_dynamic_module_callback_udp_listener_filter_config_define_counter(
+                &filter_config, {const_cast<char*>("accepted"), 8}, &counter_id));
+
+  EXPECT_NE(nullptr, TestUtility::findCounter(stats_store, "bounded.accepted"));
+  EXPECT_EQ(nullptr, TestUtility::findCounter(stats_store, "bounded.test_filter.accepted"));
+
+  EXPECT_EQ(envoy_dynamic_module_type_metrics_result_Success,
+            envoy_dynamic_module_callback_udp_listener_filter_config_define_counter(
+                &filter_config, {const_cast<char*>("rejected"), 8}, &counter_id));
+
+  EXPECT_EQ(nullptr, TestUtility::findCounter(stats_store, "bounded.rejected"));
+  auto overflow = TestUtility::findCounter(stats_store, "server.stats_overflow.counter");
+  ASSERT_NE(nullptr, overflow);
+  EXPECT_EQ(1U, overflow->value());
+  EXPECT_FALSE(custom_stat_namespaces.registered("bounded"));
+  EXPECT_FALSE(custom_stat_namespaces.registered("dynamicmodulescustom"));
 }
 
 } // namespace DynamicModules

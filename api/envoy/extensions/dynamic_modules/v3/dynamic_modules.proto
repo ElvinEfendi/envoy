@@ -117,19 +117,19 @@ message DynamicModuleConfig {
   // Optional scope configuration for metrics emitted by this dynamic module.
   //
   // .. note::
-  //   Currently, only the HTTP filter's main configuration applies this field. HTTP per-route
-  //   configurations and other dynamic module extension points ignore it.
+  //   Dynamic module extension points that expose module-defined metric callbacks apply this
+  //   field. HTTP per-route configurations and extension points without those callbacks ignore it.
   //
-  // For HTTP filters, the ``prefix`` field cannot be used together with ``metrics_namespace``. If
-  // neither is set, the existing default metrics namespace is used. A non-empty ``sharing_name``
-  // shares one process-wide scope, and therefore one set of limits, across dynamic module
-  // configurations with the same effective scope configuration. Shared scopes are rooted at the
-  // server scope instead of the HTTP filter's parent scope, which can change the fully qualified
-  // metric names. Envoy applies its stat-name sanitization to the selected prefix before creating
-  // or sharing the scope.
+  // At extension points that apply this field, ``prefix`` cannot be used together with
+  // ``metrics_namespace``. If neither is set, the extension point's existing metric prefix is
+  // used. A non-empty ``sharing_name`` shares one process-wide scope, and therefore one set of
+  // limits, across dynamic module configurations with the same effective scope configuration.
+  // Shared scopes are rooted at the server scope instead of the extension point's parent scope,
+  // which can change the fully qualified metric names. Envoy applies its stat-name sanitization to
+  // the selected prefix before creating or sharing the scope.
   //
-  // HTTP dynamic modules do not support stat eviction because module metric handles can retain
-  // direct references to stats. Configurations with ``enable_eviction`` set to ``true`` are
-  // rejected by the HTTP filter.
+  // Dynamic modules do not support stat eviction because module metric handles can retain direct
+  // references to stats. Extension points that apply this field reject ``enable_eviction`` set to
+  // ``true``.
   type.v3.Scope stats_scope = 8;
 }

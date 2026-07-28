@@ -14,10 +14,12 @@ DynamicModuleBootstrapExtensionConfig::DynamicModuleBootstrapExtensionConfig(
     const absl::string_view metrics_namespace,
     Extensions::DynamicModules::DynamicModulePtr dynamic_module,
     Event::Dispatcher& main_thread_dispatcher, Server::Configuration::ServerFactoryContext& context,
-    Stats::Store& stats_store)
+    Stats::Store& stats_store, Stats::ScopeSharedPtr final_stats_scope)
     : dynamic_module_(std::move(dynamic_module)), main_thread_dispatcher_(main_thread_dispatcher),
       context_(context), stats_store_(stats_store),
-      stats_scope_(stats_store.createScope(absl::StrCat(metrics_namespace, "."))),
+      stats_scope_(final_stats_scope != nullptr
+                       ? std::move(final_stats_scope)
+                       : stats_store.createScope(absl::StrCat(metrics_namespace, "."))),
       stat_name_pool_(stats_scope_->symbolTable()) {
   ASSERT(dynamic_module_ != nullptr);
   ASSERT(extension_name.data() != nullptr);
@@ -236,7 +238,7 @@ newDynamicModuleBootstrapExtensionConfig(
     const absl::string_view metrics_namespace,
     Extensions::DynamicModules::DynamicModulePtr dynamic_module,
     Event::Dispatcher& main_thread_dispatcher, Server::Configuration::ServerFactoryContext& context,
-    Stats::Store& stats_store) {
+    Stats::Store& stats_store, Stats::ScopeSharedPtr final_stats_scope) {
 
   // Resolve the required symbols from the dynamic module.
   auto constructor =
@@ -354,7 +356,7 @@ newDynamicModuleBootstrapExtensionConfig(
 
   auto config = std::make_shared<DynamicModuleBootstrapExtensionConfig>(
       extension_name, extension_config, metrics_namespace, std::move(dynamic_module),
-      main_thread_dispatcher, context, stats_store);
+      main_thread_dispatcher, context, stats_store, std::move(final_stats_scope));
 
   // Always register an init target so that Envoy blocks traffic until the module signals readiness.
   // This must happen before calling the module constructor so the module can call

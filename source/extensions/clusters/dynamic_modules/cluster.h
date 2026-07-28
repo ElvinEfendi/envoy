@@ -76,11 +76,13 @@ public:
    * @param cluster_config the configuration bytes to pass to the module.
    * @param module the loaded dynamic module.
    * @param stats_scope the stats scope for creating custom metrics.
+   * @param final_stats_scope an optional prebuilt final scope used directly for custom metrics.
    * @return a shared pointer to the config, or an error status.
    */
   static absl::StatusOr<std::shared_ptr<DynamicModuleClusterConfig>>
   create(const std::string& cluster_name, const std::string& cluster_config,
-         Envoy::Extensions::DynamicModules::DynamicModulePtr module, Stats::Scope& stats_scope);
+         Envoy::Extensions::DynamicModules::DynamicModulePtr module, Stats::Scope& stats_scope,
+         Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
   ~DynamicModuleClusterConfig();
 
@@ -279,7 +281,8 @@ public:
 private:
   DynamicModuleClusterConfig(const std::string& cluster_name, const std::string& cluster_config,
                              Envoy::Extensions::DynamicModules::DynamicModulePtr module,
-                             Stats::Scope& stats_scope);
+                             Stats::Scope& stats_scope,
+                             Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
   const std::string cluster_name_;
   const std::string cluster_config_;

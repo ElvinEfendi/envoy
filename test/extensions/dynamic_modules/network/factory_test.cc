@@ -1,6 +1,8 @@
 #include "envoy/extensions/filters/network/dynamic_modules/v3/dynamic_modules.pb.h"
 
+#include "source/common/stats/allocator.h"
 #include "source/common/stats/custom_stat_namespaces_impl.h"
+#include "source/common/stats/thread_local_store.h"
 #include "source/extensions/filters/network/dynamic_modules/factory.h"
 
 #include "test/extensions/dynamic_modules/util.h"
@@ -9,6 +11,7 @@
 #include "test/test_common/environment.h"
 #include "test/test_common/status_utility.h"
 #include "test/test_common/test_runtime.h"
+#include "test/test_common/utility.h"
 
 namespace Envoy {
 namespace Server {
@@ -125,6 +128,73 @@ TEST_F(DynamicModuleNetworkFilterFactoryTest, ConfigInitializationFailure) {
                                "test_filter"));
 }
 
+TEST_F(DynamicModuleNetworkFilterFactoryTest, StatsScopeValidationPrecedesModuleInitialization) {
+  {
+    NiceMock<MockFactoryContext> context;
+    envoy::extensions::filters::network::dynamic_modules::v3::DynamicModuleNetworkFilter config;
+    config.mutable_dynamic_module_config()->set_name("program_init_fail");
+    config.mutable_dynamic_module_config()->mutable_stats_scope()->set_enable_eviction(true);
+    config.set_filter_name("eviction");
+
+    auto result = factory_.createFilterFactoryFromProto(config, context);
+
+    EXPECT_THAT(result, HasStatusMessage(testing::HasSubstr(
+                            "Dynamic modules do not support stats_scope.enable_eviction")));
+    EXPECT_EQ(1U, failureCounter(context.server_factory_context_.serverScope(), "config_init_error",
+                                 "eviction"));
+    EXPECT_EQ(0U, failureCounter(context.server_factory_context_.serverScope(), "module_load_error",
+                                 "eviction"));
+  }
+
+  {
+    NiceMock<MockFactoryContext> context;
+    envoy::extensions::filters::network::dynamic_modules::v3::DynamicModuleNetworkFilter config;
+    config.mutable_dynamic_module_config()->set_name("program_init_fail");
+    config.mutable_dynamic_module_config()->set_metrics_namespace("legacy");
+    config.mutable_dynamic_module_config()->mutable_stats_scope()->set_prefix("scoped");
+    config.set_filter_name("prefix_conflict");
+
+    auto result = factory_.createFilterFactoryFromProto(config, context);
+
+    EXPECT_THAT(result, HasStatusMessage(testing::HasSubstr(
+                            "metrics_namespace and stats_scope.prefix cannot both be non-empty")));
+    EXPECT_EQ(1U, failureCounter(context.server_factory_context_.serverScope(), "config_init_error",
+                                 "prefix_conflict"));
+    EXPECT_EQ(0U, failureCounter(context.server_factory_context_.serverScope(), "module_load_error",
+                                 "prefix_conflict"));
+  }
+}
+
+TEST_F(DynamicModuleNetworkFilterFactoryTest, StatsScopeIsFinalScopeForModuleMetrics) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix", "true"}});
+
+  Stats::CustomStatNamespacesImpl custom_stat_namespaces;
+  ON_CALL(context_.server_factory_context_.api_, customStatNamespaces())
+      .WillByDefault(testing::ReturnRef(custom_stat_namespaces));
+  Stats::SymbolTableImpl symbol_table;
+  Stats::Allocator allocator(symbol_table);
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr root_scope = stats_store.rootScope();
+  ON_CALL(context_.server_factory_context_, scope()).WillByDefault(testing::ReturnRef(*root_scope));
+
+  envoy::extensions::filters::network::dynamic_modules::v3::DynamicModuleNetworkFilter config;
+  config.mutable_dynamic_module_config()->set_name("network_no_op");
+  config.mutable_dynamic_module_config()->mutable_stats_scope()->set_prefix("bounded");
+  config.mutable_dynamic_module_config()->mutable_stats_scope()->mutable_max_counters()->set_value(
+      1);
+  config.set_filter_name("stats_scope");
+
+  auto result = factory_.createFilterFactoryFromProto(config, context_);
+
+  ASSERT_OK(result);
+  EXPECT_NE(nullptr, TestUtility::findCounter(stats_store, "bounded.first"));
+  EXPECT_EQ(nullptr, TestUtility::findCounter(stats_store, "bounded.second"));
+  EXPECT_FALSE(custom_stat_namespaces.registered("bounded"));
+  EXPECT_FALSE(custom_stat_namespaces.registered("dynamicmodulescustom"));
+}
+
 TEST_F(DynamicModuleNetworkFilterFactoryTest, MalformedFilterConfig) {
   // The module loads fine, but the filter_config Any cannot be unpacked, so the failure is counted
   // as config_init_error (not module_load_error). A malformed Any must be built programmatically
@@ -229,6 +299,8 @@ TEST_F(DynamicModuleNetworkFilterFactoryTest, LegacyBehaviorWithRuntimeGuard) {
   envoy::extensions::filters::network::dynamic_modules::v3::DynamicModuleNetworkFilter config;
   config.mutable_dynamic_module_config()->set_name("network_no_op");
   config.mutable_dynamic_module_config()->set_metrics_namespace("custom_namespace");
+  config.mutable_dynamic_module_config()->mutable_stats_scope()->mutable_max_counters()->set_value(
+      1);
   config.set_filter_name("test_filter");
 
   auto result = factory_.createFilterFactoryFromProto(config, context_);

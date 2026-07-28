@@ -6,6 +6,7 @@
 #include "source/common/protobuf/utility.h"
 #include "source/common/runtime/runtime_features.h"
 #include "source/extensions/dynamic_modules/dynamic_module_stats.h"
+#include "source/extensions/dynamic_modules/stats_scope.h"
 #include "source/extensions/tracers/dynamic_modules/tracer_config.h"
 
 namespace Envoy {
@@ -21,6 +22,20 @@ Tracing::DriverSharedPtr DynamicModuleTracerFactory::createTracerDriver(
 
   Server::Configuration::ServerFactoryContext& server_context = context.serverFactoryContext();
   const auto& module_config = proto_config.dynamic_module_config();
+
+  auto stats_scope_or_error = Extensions::DynamicModules::createStatsScope(
+      module_config, DefaultMetricsNamespace,
+      Extensions::DynamicModules::DynamicModulesStatsScopeDomain, server_context.scope(),
+      server_context);
+  if (!stats_scope_or_error.ok()) {
+    Extensions::DynamicModules::incrementLoadFailure(
+        server_context, proto_config.tracer_name(),
+        Extensions::DynamicModules::ConfigInitErrorStat);
+    throw EnvoyException(std::string(stats_scope_or_error.status().message()));
+  }
+  Extensions::DynamicModules::DynamicModuleStatsScope stats_scope =
+      std::move(stats_scope_or_error.value());
+
   // Tracers do not support remote module sources, so no init manager or async callback is passed;
   // only the synchronous local-file and by-name paths can succeed here.
   auto load_result = Extensions::DynamicModules::newDynamicModuleByConfig(
@@ -43,13 +58,9 @@ Tracing::DriverSharedPtr DynamicModuleTracerFactory::createTracerDriver(
     tracer_config_str = std::move(config_or_error.value());
   }
 
-  const std::string metrics_namespace = module_config.metrics_namespace().empty()
-                                            ? std::string(DefaultMetricsNamespace)
-                                            : module_config.metrics_namespace();
-
-  auto tracer_config =
-      newDynamicModuleTracerConfig(proto_config.tracer_name(), tracer_config_str, metrics_namespace,
-                                   std::move(dynamic_module), server_context.scope());
+  auto tracer_config = newDynamicModuleTracerConfig(proto_config.tracer_name(), tracer_config_str,
+                                                    stats_scope.prefix, std::move(dynamic_module),
+                                                    server_context.scope(), stats_scope.scope);
 
   if (!tracer_config.ok()) {
     Extensions::DynamicModules::incrementLoadFailure(
@@ -59,9 +70,13 @@ Tracing::DriverSharedPtr DynamicModuleTracerFactory::createTracerDriver(
                          std::string(tracer_config.status().message()));
   }
 
-  if (Runtime::runtimeFeatureEnabled(
+  if (module_config.stats_scope().prefix().empty() &&
+      Runtime::runtimeFeatureEnabled(
           "envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix")) {
-    server_context.api().customStatNamespaces().registerStatNamespace(metrics_namespace);
+    const absl::string_view legacy_namespace = module_config.metrics_namespace().empty()
+                                                   ? DefaultMetricsNamespace
+                                                   : module_config.metrics_namespace();
+    server_context.api().customStatNamespaces().registerStatNamespace(legacy_namespace);
   }
 
   return std::make_shared<DynamicModuleDriver>(std::move(tracer_config.value()));

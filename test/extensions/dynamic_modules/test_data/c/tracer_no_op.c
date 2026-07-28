@@ -9,9 +9,18 @@ envoy_dynamic_module_type_abi_version_module_ptr envoy_dynamic_module_on_program
 envoy_dynamic_module_type_tracer_config_module_ptr envoy_dynamic_module_on_tracer_config_new(
     envoy_dynamic_module_type_tracer_config_envoy_ptr config_envoy_ptr,
     envoy_dynamic_module_type_envoy_buffer name, envoy_dynamic_module_type_envoy_buffer config) {
-  (void)config_envoy_ptr;
-  (void)name;
   (void)config;
+  if (name.length == 10 && memcmp(name.ptr, "stats_test", 10) == 0) {
+    size_t counter_id = 0;
+    envoy_dynamic_module_type_module_buffer counter_name = {.ptr = "tracer_config_total",
+                                                            .length = 19};
+    if (envoy_dynamic_module_callback_tracer_define_counter(
+            config_envoy_ptr, counter_name, NULL, 0, &counter_id) ==
+        envoy_dynamic_module_type_metrics_result_Success) {
+      (void)envoy_dynamic_module_callback_tracer_increment_counter(
+          config_envoy_ptr, counter_id, NULL, 0, 1);
+    }
+  }
   static int config_dummy = 0;
   return &config_dummy;
 }

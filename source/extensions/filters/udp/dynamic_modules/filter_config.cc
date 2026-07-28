@@ -11,16 +11,19 @@ namespace DynamicModules {
 DynamicModuleUdpListenerFilterConfig::DynamicModuleUdpListenerFilterConfig(
     const envoy::extensions::filters::udp::dynamic_modules::v3::DynamicModuleUdpListenerFilter&
         config,
-    Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope)
+    Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope,
+    Stats::ScopeSharedPtr final_stats_scope)
     : filter_name_(config.filter_name()),
       filter_config_(
           THROW_OR_RETURN_VALUE(MessageUtil::knownAnyToBytes(config.filter_config()), std::string)),
       dynamic_module_(std::move(dynamic_module)),
-      stats_scope_(stats_scope.createScope(
-          absl::StrCat(config.dynamic_module_config().metrics_namespace().empty()
-                           ? std::string(DefaultMetricsNamespace)
-                           : config.dynamic_module_config().metrics_namespace(),
-                       ".", config.filter_name(), "."))),
+      stats_scope_(final_stats_scope != nullptr
+                       ? std::move(final_stats_scope)
+                       : stats_scope.createScope(
+                             absl::StrCat(config.dynamic_module_config().metrics_namespace().empty()
+                                              ? std::string(DefaultMetricsNamespace)
+                                              : config.dynamic_module_config().metrics_namespace(),
+                                          ".", config.filter_name(), "."))),
       stat_name_pool_(stats_scope_->symbolTable()) {
 
   auto config_new_or_error = dynamic_module_->getFunctionPointer<decltype(on_filter_config_new_)>(

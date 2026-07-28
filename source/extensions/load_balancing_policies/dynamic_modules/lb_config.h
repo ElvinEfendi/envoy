@@ -50,13 +50,15 @@ public:
    * @param metrics_namespace the namespace prefix for metrics emitted by this module.
    * @param dynamic_module the loaded dynamic module.
    * @param stats_scope the stats scope for creating custom metrics.
+   * @param final_stats_scope an optional prebuilt final scope. When provided, metrics are created
+   * directly in this scope instead of a child of stats_scope.
    * @return a shared pointer to the config, or an error status.
    */
   static absl::StatusOr<DynamicModuleLbConfigSharedPtr>
   create(const std::string& lb_policy_name, const std::string& lb_config,
          const std::string& metrics_namespace,
          Envoy::Extensions::DynamicModules::DynamicModulePtr dynamic_module,
-         Stats::Scope& stats_scope);
+         Stats::Scope& stats_scope, Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
   ~DynamicModuleLbConfig();
 
@@ -243,7 +245,7 @@ private:
   DynamicModuleLbConfig(const std::string& lb_policy_name, const std::string& lb_config,
                         const std::string& metrics_namespace,
                         Envoy::Extensions::DynamicModules::DynamicModulePtr dynamic_module,
-                        Stats::Scope& stats_scope);
+                        Stats::Scope& stats_scope, Stats::ScopeSharedPtr final_stats_scope);
 
   const std::string lb_policy_name_;
   const std::string lb_config_;

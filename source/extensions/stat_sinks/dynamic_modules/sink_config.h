@@ -42,10 +42,12 @@ public:
    * @param sink_config the configuration bytes for the sink.
    * @param dynamic_module the loaded dynamic module.
    * @param server the server factory context, used for the main thread dispatcher and stats scope.
+   * @param final_stats_scope an optional prebuilt final scope used directly for module gauges.
    */
   DynamicModuleStatsSinkConfig(absl::string_view sink_name, absl::string_view sink_config,
                                Extensions::DynamicModules::DynamicModulePtr dynamic_module,
-                               Server::Configuration::ServerFactoryContext& server);
+                               Server::Configuration::ServerFactoryContext& server,
+                               Stats::ScopeSharedPtr final_stats_scope = nullptr);
   ~DynamicModuleStatsSinkConfig();
 
   // The corresponding in-module configuration pointer.
@@ -95,7 +97,8 @@ private:
   friend absl::StatusOr<std::shared_ptr<DynamicModuleStatsSinkConfig>>
   newDynamicModuleStatsSinkConfig(absl::string_view sink_name, absl::string_view sink_config,
                                   Extensions::DynamicModules::DynamicModulePtr dynamic_module,
-                                  Server::Configuration::ServerFactoryContext& server);
+                                  Server::Configuration::ServerFactoryContext& server,
+                                  Stats::ScopeSharedPtr final_stats_scope);
 
   const std::string sink_name_;
   const std::string sink_config_;
@@ -147,12 +150,14 @@ private:
  * @param sink_config the configuration bytes for the sink.
  * @param dynamic_module the loaded dynamic module.
  * @param server the server factory context, used for the main thread dispatcher and stats scope.
+ * @param final_stats_scope an optional prebuilt final scope used directly for module gauges.
  * @return a shared pointer to the config or an error if symbol resolution failed.
  */
 absl::StatusOr<DynamicModuleStatsSinkConfigSharedPtr>
 newDynamicModuleStatsSinkConfig(absl::string_view sink_name, absl::string_view sink_config,
                                 Extensions::DynamicModules::DynamicModulePtr dynamic_module,
-                                Server::Configuration::ServerFactoryContext& server);
+                                Server::Configuration::ServerFactoryContext& server,
+                                Stats::ScopeSharedPtr final_stats_scope = nullptr);
 
 } // namespace DynamicModules
 } // namespace StatSinks

@@ -1,11 +1,17 @@
+#include <vector>
+
 #include "envoy/registry/registry.h"
 
+#include "source/common/stats/allocator.h"
+#include "source/common/stats/custom_stat_namespaces_impl.h"
+#include "source/common/stats/thread_local_store.h"
 #include "source/extensions/access_loggers/dynamic_modules/config.h"
 
 #include "test/extensions/dynamic_modules/util.h"
 #include "test/mocks/access_log/mocks.h"
 #include "test/mocks/server/options.h"
 #include "test/mocks/server/server_factory_context.h"
+#include "test/test_common/test_runtime.h"
 #include "test/test_common/utility.h"
 
 #include "gmock/gmock.h"
@@ -111,6 +117,47 @@ TEST_F(DynamicModuleAccessLogFactoryTest, RemoteSourceRejected) {
   AccessLog::FilterPtr filter;
   EXPECT_THROW(factory_.createAccessLogInstance(proto_config, std::move(filter), context, {}),
                EnvoyException);
+}
+
+TEST_F(DynamicModuleAccessLogFactoryTest, StatsScopeValidationPrecedesModuleInitialization) {
+  struct TestCase {
+    std::string yaml;
+    std::string expected_error;
+  };
+  const std::vector<TestCase> test_cases = {
+      {R"EOF(
+dynamic_module_config:
+  name: program_init_fail
+  stats_scope:
+    enable_eviction: true
+logger_name: test_logger
+)EOF",
+       "Dynamic modules do not support stats_scope.enable_eviction"},
+      {R"EOF(
+dynamic_module_config:
+  name: program_init_fail
+  metrics_namespace: legacy
+  stats_scope:
+    prefix: scoped
+logger_name: test_logger
+)EOF",
+       "metrics_namespace and stats_scope.prefix cannot both be non-empty"},
+  };
+
+  for (const TestCase& test_case : test_cases) {
+    NiceMock<Server::Configuration::MockGenericFactoryContext> context;
+    envoy::extensions::access_loggers::dynamic_modules::v3::DynamicModuleAccessLog proto_config;
+    TestUtility::loadFromYaml(test_case.yaml, proto_config);
+
+    AccessLog::FilterPtr filter;
+    EXPECT_THROW_WITH_REGEX(
+        factory_.createAccessLogInstance(proto_config, std::move(filter), context, {}),
+        EnvoyException, test_case.expected_error);
+    EXPECT_EQ(1U, failureCounter(context.server_context_.serverScope(), "config_init_error",
+                                 "test_logger"));
+    EXPECT_EQ(0U, failureCounter(context.server_context_.serverScope(), "module_load_error",
+                                 "test_logger"));
+  }
 }
 
 TEST_F(DynamicModuleAccessLogFactoryTest, ValidConfigWithFilter) {
@@ -322,6 +369,86 @@ logger_config:
   EXPECT_THROW_WITH_REGEX(
       factory_.createAccessLogInstance(proto_config, std::move(filter), context, {}),
       EnvoyException, "Failed to initialize dynamic module access logger config");
+}
+
+TEST_F(DynamicModuleAccessLogFactoryRustTest, StatsScopeIsFinalScopeForModuleMetrics) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix", "true"}});
+
+  Stats::SymbolTableImpl symbol_table;
+  Stats::Allocator allocator(symbol_table);
+  Stats::ThreadLocalStoreImpl stats_store(allocator);
+  Stats::ScopeSharedPtr root_scope = stats_store.rootScope();
+  NiceMock<Server::Configuration::MockGenericFactoryContext> context;
+  ON_CALL(context.server_context_, scope()).WillByDefault(testing::ReturnRef(*root_scope));
+  ON_CALL(context.server_context_, serverScope()).WillByDefault(testing::ReturnRef(*root_scope));
+  NiceMock<Server::MockOptions> options;
+  ON_CALL(options, concurrency()).WillByDefault(testing::Return(1));
+  ON_CALL(context.server_context_, options()).WillByDefault(testing::ReturnRef(options));
+  ScopedThreadLocalServerContextSetter setter(context.server_context_);
+  Stats::CustomStatNamespacesImpl custom_stat_namespaces;
+  ON_CALL(context.server_context_.api_, customStatNamespaces())
+      .WillByDefault(testing::ReturnRef(custom_stat_namespaces));
+
+  const std::string yaml = R"EOF(
+dynamic_module_config:
+  name: access_log_integration_test
+  do_not_close: true
+  stats_scope:
+    prefix: bounded_access
+    max_counters: 0
+logger_name: test_logger
+)EOF";
+  envoy::extensions::access_loggers::dynamic_modules::v3::DynamicModuleAccessLog proto_config;
+  TestUtility::loadFromYaml(yaml, proto_config);
+
+  AccessLog::FilterPtr filter;
+  auto access_log = factory_.createAccessLogInstance(proto_config, std::move(filter), context, {});
+
+  ASSERT_NE(access_log, nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "bounded_access.test_log_count"), nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "bounded_access.config_total"), nullptr);
+  ASSERT_NE(TestUtility::findCounter(stats_store, "server.stats_overflow.counter"), nullptr);
+  EXPECT_EQ(TestUtility::findCounter(stats_store, "server.stats_overflow.counter")->value(), 2);
+  EXPECT_FALSE(custom_stat_namespaces.registered("bounded_access"));
+  EXPECT_FALSE(custom_stat_namespaces.registered("dynamicmodulescustom"));
+}
+
+TEST_F(DynamicModuleAccessLogFactoryRustTest, StatsScopeLimitsPreserveLegacyNamespaceRegistration) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.dynamic_modules_strip_custom_stat_prefix", "true"}});
+
+  NiceMock<Server::Configuration::MockGenericFactoryContext> context;
+  NiceMock<Server::MockOptions> options;
+  ON_CALL(options, concurrency()).WillByDefault(testing::Return(1));
+  ON_CALL(context.server_context_, options()).WillByDefault(testing::ReturnRef(options));
+  ScopedThreadLocalServerContextSetter setter(context.server_context_);
+  Stats::CustomStatNamespacesImpl custom_stat_namespaces;
+  ON_CALL(context.server_context_.api_, customStatNamespaces())
+      .WillByDefault(testing::ReturnRef(custom_stat_namespaces));
+
+  const std::string yaml = R"EOF(
+dynamic_module_config:
+  name: access_log_integration_test
+  do_not_close: true
+  metrics_namespace: legacy_access
+  stats_scope:
+    max_counters: 2
+logger_name: test_logger
+)EOF";
+  envoy::extensions::access_loggers::dynamic_modules::v3::DynamicModuleAccessLog proto_config;
+  TestUtility::loadFromYaml(yaml, proto_config);
+
+  AccessLog::FilterPtr filter;
+  auto access_log = factory_.createAccessLogInstance(proto_config, std::move(filter), context, {});
+
+  ASSERT_NE(access_log, nullptr);
+  Stats::Store& store = context.server_context_.serverScope().store();
+  EXPECT_NE(TestUtility::findCounter(store, "legacy_access.test_log_count"), nullptr);
+  EXPECT_NE(TestUtility::findCounter(store, "legacy_access.config_total"), nullptr);
+  EXPECT_TRUE(custom_stat_namespaces.registered("legacy_access"));
 }
 
 } // namespace

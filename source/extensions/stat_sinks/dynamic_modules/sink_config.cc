@@ -13,10 +13,12 @@ namespace DynamicModules {
 DynamicModuleStatsSinkConfig::DynamicModuleStatsSinkConfig(
     absl::string_view sink_name, absl::string_view sink_config,
     Extensions::DynamicModules::DynamicModulePtr dynamic_module,
-    Server::Configuration::ServerFactoryContext& server)
+    Server::Configuration::ServerFactoryContext& server, Stats::ScopeSharedPtr final_stats_scope)
     : main_thread_dispatcher_(server.mainThreadDispatcher()), sink_name_(sink_name),
       sink_config_(sink_config), dynamic_module_(std::move(dynamic_module)),
-      stats_scope_(server.scope().createScope("")), stat_name_pool_(stats_scope_->symbolTable()) {}
+      stats_scope_(final_stats_scope != nullptr ? std::move(final_stats_scope)
+                                                : server.scope().createScope("")),
+      stat_name_pool_(stats_scope_->symbolTable()) {}
 
 DynamicModuleStatsSinkConfig::~DynamicModuleStatsSinkConfig() {
   if (in_module_config_ != nullptr && on_config_destroy_ != nullptr) {
@@ -69,7 +71,8 @@ void DynamicModuleStatsSinkConfig::onScheduled(uint64_t event_id) {
 absl::StatusOr<DynamicModuleStatsSinkConfigSharedPtr>
 newDynamicModuleStatsSinkConfig(absl::string_view sink_name, absl::string_view sink_config,
                                 Extensions::DynamicModules::DynamicModulePtr dynamic_module,
-                                Server::Configuration::ServerFactoryContext& server) {
+                                Server::Configuration::ServerFactoryContext& server,
+                                Stats::ScopeSharedPtr final_stats_scope) {
   ASSERT_IS_MAIN_OR_TEST_THREAD();
 
   auto on_config_new = dynamic_module->getFunctionPointer<OnStatSinkConfigNewType>(
@@ -93,8 +96,8 @@ newDynamicModuleStatsSinkConfig(absl::string_view sink_name, absl::string_view s
   auto on_config_scheduled = dynamic_module->getFunctionPointer<OnStatSinkConfigScheduledType>(
       "envoy_dynamic_module_on_stat_sink_config_scheduled");
 
-  auto config = std::make_shared<DynamicModuleStatsSinkConfig>(sink_name, sink_config,
-                                                               std::move(dynamic_module), server);
+  auto config = std::make_shared<DynamicModuleStatsSinkConfig>(
+      sink_name, sink_config, std::move(dynamic_module), server, std::move(final_stats_scope));
 
   config->on_config_destroy_ = on_config_destroy.value();
   config->on_flush_ = on_flush.value();

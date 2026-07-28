@@ -11,9 +11,10 @@ absl::StatusOr<DynamicModuleLbConfigSharedPtr>
 DynamicModuleLbConfig::create(const std::string& lb_policy_name, const std::string& lb_config,
                               const std::string& metrics_namespace,
                               Envoy::Extensions::DynamicModules::DynamicModulePtr module,
-                              Stats::Scope& stats_scope) {
-  std::shared_ptr<DynamicModuleLbConfig> config(new DynamicModuleLbConfig(
-      lb_policy_name, lb_config, metrics_namespace, std::move(module), stats_scope));
+                              Stats::Scope& stats_scope, Stats::ScopeSharedPtr final_stats_scope) {
+  std::shared_ptr<DynamicModuleLbConfig> config(
+      new DynamicModuleLbConfig(lb_policy_name, lb_config, metrics_namespace, std::move(module),
+                                stats_scope, std::move(final_stats_scope)));
 
   // Resolve all required function pointers from the dynamic module.
 #define RESOLVE_SYMBOL(name, type, member)                                                         \
@@ -56,8 +57,11 @@ DynamicModuleLbConfig::create(const std::string& lb_policy_name, const std::stri
 DynamicModuleLbConfig::DynamicModuleLbConfig(
     const std::string& lb_policy_name, const std::string& lb_config,
     const std::string& metrics_namespace,
-    Envoy::Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope)
-    : stats_scope_(stats_scope.createScope(absl::StrCat(metrics_namespace, "."))),
+    Envoy::Extensions::DynamicModules::DynamicModulePtr dynamic_module, Stats::Scope& stats_scope,
+    Stats::ScopeSharedPtr final_stats_scope)
+    : stats_scope_(final_stats_scope != nullptr
+                       ? std::move(final_stats_scope)
+                       : stats_scope.createScope(absl::StrCat(metrics_namespace, "."))),
       stat_name_pool_(stats_scope_->symbolTable()), lb_policy_name_(lb_policy_name),
       lb_config_(lb_config), dynamic_module_(std::move(dynamic_module)) {}
 
