@@ -18,6 +18,7 @@ fn new_config_validator_config(
     "required_clusters" => Some(Box::new(RequiredClustersValidator {
       required_cluster: String::from_utf8(config.to_vec()).ok()?,
     })),
+    "resource_presence" => Some(Box::new(ResourcePresenceValidator)),
     "empty_rejection_message" => Some(Box::new(EmptyRejectionMessageValidator)),
     "panic" => Some(Box::new(PanicValidator)),
     _ => None,
@@ -89,6 +90,39 @@ impl ConfigValidatorConfig for RequiredClustersValidator {
 }
 
 struct EmptyRejectionMessageValidator;
+
+struct ResourcePresenceValidator;
+
+impl ResourcePresenceValidator {
+  fn validate_resources(resources: &[ConfigValidatorResource]) -> Result<(), String> {
+    let has_present_resource = resources
+      .iter()
+      .any(|resource| resource.name.as_ref() == "cluster_present" && resource.resource.is_some());
+    let has_absent_resource = resources
+      .iter()
+      .any(|resource| resource.name.as_ref() == "cluster_absent" && resource.resource.is_none());
+    if has_present_resource && has_absent_resource {
+      Ok(())
+    } else {
+      Err("resource payload presence was not preserved".to_string())
+    }
+  }
+}
+
+impl ConfigValidatorConfig for ResourcePresenceValidator {
+  fn validate(&self, _type_url: &str, resources: &[ConfigValidatorResource]) -> Result<(), String> {
+    Self::validate_resources(resources)
+  }
+
+  fn validate_delta(
+    &self,
+    _type_url: &str,
+    added_resources: &[ConfigValidatorResource],
+    _removed_resources: &[&str],
+  ) -> Result<(), String> {
+    Self::validate_resources(added_resources)
+  }
+}
 
 impl ConfigValidatorConfig for EmptyRejectionMessageValidator {
   fn validate(

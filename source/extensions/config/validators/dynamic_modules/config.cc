@@ -19,35 +19,6 @@ namespace {
 
 using DynamicModuleConfigValidatorProto =
     envoy::extensions::config::validators::dynamic_modules::v3::DynamicModuleConfigValidator;
-using DynamicModuleConfigProto = envoy::extensions::dynamic_modules::v3::DynamicModuleConfig;
-
-Envoy::Extensions::DynamicModules::DynamicModulePtr
-loadDynamicModuleOrThrow(const DynamicModuleConfigProto& module_config) {
-  absl::StatusOr<Envoy::Extensions::DynamicModules::DynamicModulePtr> dynamic_module;
-
-  if (module_config.has_module()) {
-    if (!module_config.module().has_local() || !module_config.module().local().has_filename()) {
-      throw EnvoyException(
-          "Only local file path module sources are supported for dynamic module config validators");
-    }
-    dynamic_module = Envoy::Extensions::DynamicModules::newDynamicModule(
-        module_config.module().local().filename(), module_config.do_not_close(),
-        module_config.load_globally());
-  } else {
-    if (module_config.name().empty()) {
-      throw EnvoyException(
-          "Either 'name' or 'module.local.filename' must be specified in dynamic_module_config");
-    }
-    dynamic_module = Envoy::Extensions::DynamicModules::newDynamicModuleByName(
-        module_config.name(), module_config.do_not_close(), module_config.load_globally());
-  }
-
-  if (!dynamic_module.ok()) {
-    throw EnvoyException("Failed to load dynamic module: " +
-                         std::string(dynamic_module.status().message()));
-  }
-  return std::move(dynamic_module.value());
-}
 
 std::string extensionConfigBytesOrThrow(const DynamicModuleConfigValidatorProto& proto_config) {
   if (!proto_config.has_extension_config()) {
@@ -55,32 +26,49 @@ std::string extensionConfigBytesOrThrow(const DynamicModuleConfigValidatorProto&
   }
   auto config_or_error = MessageUtil::knownAnyToBytes(proto_config.extension_config());
   if (!config_or_error.ok()) {
-    throw EnvoyException("Failed to parse dynamic module config validator extension_config: " +
-                         std::string(config_or_error.status().message()));
+    throwEnvoyExceptionOrPanic(
+        "Failed to parse dynamic module config validator extension_config: " +
+        std::string(config_or_error.status().message()));
   }
   return std::move(config_or_error.value());
+}
+
+std::string typeUrlOrThrow(const DynamicModuleConfigValidatorProto& proto_config) {
+  const std::string& type_url = proto_config.type_url();
+  const auto descriptor_full_name = TypeUtil::typeUrlToDescriptorFullName(type_url);
+  if (descriptor_full_name.empty() ||
+      TypeUtil::descriptorFullNameToTypeUrl(descriptor_full_name) != type_url) {
+    throwEnvoyExceptionOrPanic("dynamic module config validator type_url must use the canonical "
+                               "type.googleapis.com/<message> form");
+  }
+  return type_url;
 }
 
 } // namespace
 
 Envoy::Config::ConfigValidatorPtr DynamicModuleConfigValidatorFactory::createConfigValidator(
     const Protobuf::Any& config, ProtobufMessage::ValidationVisitor& validation_visitor) {
-  const auto& proto_config =
-      MessageUtil::anyConvertAndValidate<DynamicModuleConfigValidatorProto>(config,
-                                                                            validation_visitor);
+  const auto& proto_config = MessageUtil::anyConvertAndValidate<DynamicModuleConfigValidatorProto>(
+      config, validation_visitor);
+  const std::string type_url = typeUrlOrThrow(proto_config);
 
-  Envoy::Extensions::DynamicModules::DynamicModulePtr dynamic_module =
-      loadDynamicModuleOrThrow(proto_config.dynamic_module_config());
+  auto load_result = Envoy::Extensions::DynamicModules::newDynamicModuleByConfig(
+      proto_config.dynamic_module_config(), proto_config.extension_name());
+  if (!load_result.ok()) {
+    throwEnvoyExceptionOrPanic(std::string(load_result.status().message()));
+  }
+  ASSERT(load_result->loaded != nullptr);
+  auto dynamic_module = std::move(load_result->loaded);
   std::string extension_config = extensionConfigBytesOrThrow(proto_config);
 
   auto validator_config = newDynamicModuleConfigValidatorConfig(
       proto_config.extension_name(), extension_config, std::move(dynamic_module));
   if (!validator_config.ok()) {
-    throw EnvoyException("Failed to create dynamic module config validator: " +
-                         std::string(validator_config.status().message()));
+    throwEnvoyExceptionOrPanic("Failed to create dynamic module config validator: " +
+                               std::string(validator_config.status().message()));
   }
 
-  return std::make_unique<DynamicModuleConfigValidator>(proto_config.type_url(),
+  return std::make_unique<DynamicModuleConfigValidator>(type_url,
                                                         std::move(validator_config.value()));
 }
 
@@ -95,10 +83,9 @@ std::string DynamicModuleConfigValidatorFactory::typeUrl() const {
 
 std::string DynamicModuleConfigValidatorFactory::typeUrl(
     const Protobuf::Any& config, ProtobufMessage::ValidationVisitor& validation_visitor) const {
-  const auto& proto_config =
-      MessageUtil::anyConvertAndValidate<DynamicModuleConfigValidatorProto>(config,
-                                                                            validation_visitor);
-  return proto_config.type_url();
+  const auto& proto_config = MessageUtil::anyConvertAndValidate<DynamicModuleConfigValidatorProto>(
+      config, validation_visitor);
+  return typeUrlOrThrow(proto_config);
 }
 
 REGISTER_FACTORY(DynamicModuleConfigValidatorFactory, Envoy::Config::ConfigValidatorFactory);

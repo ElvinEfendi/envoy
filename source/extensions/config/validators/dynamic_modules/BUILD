@@ -21,6 +21,7 @@ envoy_cc_library(
         "//source/common/common:assert_lib",
         "//source/extensions/dynamic_modules:abi_impl",
         "//source/extensions/dynamic_modules:dynamic_modules_lib",
+        "//source/extensions/dynamic_modules/abi",
     ],
 )
 
@@ -35,6 +36,5 @@ envoy_cc_extension(
         "//source/common/protobuf:utility_lib",
         "//source/extensions/dynamic_modules:dynamic_modules_lib",
         "@envoy_api//envoy/extensions/config/validators/dynamic_modules/v3:pkg_cc_proto",
-        "@envoy_api//envoy/extensions/dynamic_modules/v3:pkg_cc_proto",
     ],
 )

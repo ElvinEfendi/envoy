@@ -44,7 +44,7 @@
 // SDK downstream users.
 // 2. In the future, after the stable ABI is established, we may want to decouple the ABI version
 // from Envoy's versioning scheme.
-#define ENVOY_DYNAMIC_MODULES_ABI_VERSION "v0.2.0"
+#define ENVOY_DYNAMIC_MODULES_ABI_VERSION "v0.1.0"
 
 #ifdef __cplusplus
 #include <cstddef>
@@ -12114,13 +12114,17 @@ typedef const void* envoy_dynamic_module_type_config_validator_config_module_ptr
  *
  * The name, version, and serialized_resource buffers are owned by Envoy and are valid only for the
  * duration of the validation event hook call. Modules must copy any data they need to retain after
- * returning from the hook.
+ * returning from the hook. If has_resource is false, serialized_resource is {NULL, 0}; the name and
+ * version remain valid. Payload-less entries can represent a State-of-the-World heartbeat-style
+ * resource or a delta unresolved alias.
  */
 typedef struct envoy_dynamic_module_type_config_validator_resource {
   // Resource name from Config::DecodedResource::name().
   envoy_dynamic_module_type_envoy_buffer name;
   // Resource version from Config::DecodedResource::version().
   envoy_dynamic_module_type_envoy_buffer version;
+  // Whether the xDS resource envelope contains a resource payload.
+  bool has_resource;
   // Serialized protobuf bytes for Config::DecodedResource::resource().
   envoy_dynamic_module_type_envoy_buffer serialized_resource;
 } envoy_dynamic_module_type_config_validator_resource;
@@ -12161,7 +12165,8 @@ void envoy_dynamic_module_on_config_validator_config_destroy(
  * before Envoy accepts the update.
  *
  * The resources array and all buffers referenced by the array are owned by Envoy and are valid only
- * for the duration of this event hook call. Modules must copy any data they need to retain.
+ * for the duration of this event hook call. Modules must copy any data they need to retain. The
+ * resources pointer may be NULL when resources_count is zero.
  *
  * @param config_envoy_ptr is the pointer to the DynamicModuleConfigValidatorConfig object.
  * @param config_module_ptr is the pointer to the in-module config validator configuration.
@@ -12176,7 +12181,7 @@ bool envoy_dynamic_module_on_config_validator_validate(
     envoy_dynamic_module_type_config_validator_config_envoy_ptr config_envoy_ptr,
     envoy_dynamic_module_type_config_validator_config_module_ptr config_module_ptr,
     envoy_dynamic_module_type_envoy_buffer type_url,
-    envoy_dynamic_module_type_config_validator_resource* resources, size_t resources_count);
+    const envoy_dynamic_module_type_config_validator_resource* resources, size_t resources_count);
 
 /**
  * envoy_dynamic_module_on_config_validator_validate_delta is called for delta xDS updates before
@@ -12184,7 +12189,9 @@ bool envoy_dynamic_module_on_config_validator_validate(
  *
  * The added_resources array, removed_resources array, and all buffers referenced by these arrays
  * are owned by Envoy and are valid only for the duration of this event hook call. Modules must copy
- * any data they need to retain.
+ * any data they need to retain. Either array pointer may be NULL when its corresponding count is
+ * zero. Envoy can also invoke this delta hook for TTL expirations, including for a State-of-the-
+ * World subscription.
  *
  * @param config_envoy_ptr is the pointer to the DynamicModuleConfigValidatorConfig object.
  * @param config_module_ptr is the pointer to the in-module config validator configuration.
@@ -12202,8 +12209,8 @@ bool envoy_dynamic_module_on_config_validator_validate_delta(
     envoy_dynamic_module_type_config_validator_config_envoy_ptr config_envoy_ptr,
     envoy_dynamic_module_type_config_validator_config_module_ptr config_module_ptr,
     envoy_dynamic_module_type_envoy_buffer type_url,
-    envoy_dynamic_module_type_config_validator_resource* added_resources,
-    size_t added_resources_count, envoy_dynamic_module_type_envoy_buffer* removed_resources,
+    const envoy_dynamic_module_type_config_validator_resource* added_resources,
+    size_t added_resources_count, const envoy_dynamic_module_type_envoy_buffer* removed_resources,
     size_t removed_resources_count);
 
 // =============================================================================

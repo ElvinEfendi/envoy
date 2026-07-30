@@ -1,5 +1,7 @@
 #include "source/extensions/config/validators/dynamic_modules/config_validator.h"
 
+#include "envoy/common/exception.h"
+
 #include "source/common/common/assert.h"
 
 #include "absl/strings/str_cat.h"
@@ -35,13 +37,16 @@ serializeResources(const std::vector<Envoy::Config::DecodedResourcePtr>& resourc
     SerializedResource& serialized = serialized_resources[i];
     serialized.name = resource->name();
     serialized.version = resource->version();
-    if (!resource->resource().SerializeToString(&serialized.serialized_resource)) {
-      throw EnvoyException(
+    const bool has_resource = resource->hasResource();
+    if (has_resource && !resource->resource().SerializeToString(&serialized.serialized_resource)) {
+      throwEnvoyExceptionOrPanic(
           absl::StrCat("Failed to serialize xDS resource for dynamic module config validator: ",
                        resource->name()));
     }
     abi_resources[i] = {makeEnvoyBuffer(serialized.name), makeEnvoyBuffer(serialized.version),
-                        makeEnvoyBuffer(serialized.serialized_resource)};
+                        has_resource,
+                        has_resource ? makeEnvoyBuffer(serialized.serialized_resource)
+                                     : envoy_dynamic_module_type_envoy_buffer{nullptr, 0}};
   }
 
   return abi_resources;
@@ -63,12 +68,12 @@ void maybeThrowRejection(DynamicModuleConfigValidatorConfig& config, absl::strin
     return;
   }
 
-  absl::optional<std::string> rejection_message = config.takeRejectionMessage();
+  std::optional<std::string> rejection_message = config.takeRejectionMessage();
   if (rejection_message.has_value() && !rejection_message->empty()) {
-    throw EnvoyException(absl::StrCat("dynamic module config validator rejected ", type_url,
-                                      " update: ", rejection_message.value()));
+    throwEnvoyExceptionOrPanic(absl::StrCat("dynamic module config validator rejected ", type_url,
+                                            " update: ", rejection_message.value()));
   }
-  throw EnvoyException(
+  throwEnvoyExceptionOrPanic(
       absl::StrCat("dynamic module config validator rejected ", type_url, " update"));
 }
 
@@ -91,15 +96,14 @@ void DynamicModuleConfigValidatorConfig::setRejectionMessage(absl::string_view m
   rejection_message_ = std::string(message);
 }
 
-absl::optional<std::string> DynamicModuleConfigValidatorConfig::takeRejectionMessage() {
+std::optional<std::string> DynamicModuleConfigValidatorConfig::takeRejectionMessage() {
   ASSERT_IS_MAIN_OR_TEST_THREAD();
-  absl::optional<std::string> message = std::move(rejection_message_);
+  std::optional<std::string> message = std::move(rejection_message_);
   rejection_message_.reset();
   return message;
 }
 
-absl::StatusOr<DynamicModuleConfigValidatorConfigSharedPtr>
-newDynamicModuleConfigValidatorConfig(
+absl::StatusOr<DynamicModuleConfigValidatorConfigSharedPtr> newDynamicModuleConfigValidatorConfig(
     absl::string_view extension_name, absl::string_view extension_config,
     Envoy::Extensions::DynamicModules::DynamicModulePtr dynamic_module) {
   ASSERT_IS_MAIN_OR_TEST_THREAD();
@@ -129,8 +133,7 @@ newDynamicModuleConfigValidatorConfig(
   // The ABI buffers below borrow from strings owned by config and are valid only for the
   // on_config_new call. Modules must copy anything they retain.
   envoy_dynamic_module_type_envoy_buffer name_buffer = makeEnvoyBuffer(config->extension_name_);
-  envoy_dynamic_module_type_envoy_buffer config_buffer =
-      makeEnvoyBuffer(config->extension_config_);
+  envoy_dynamic_module_type_envoy_buffer config_buffer = makeEnvoyBuffer(config->extension_config_);
   config->in_module_config_ =
       on_config_new.value()(static_cast<void*>(config.get()), name_buffer, config_buffer);
   if (config->in_module_config_ == nullptr) {
@@ -153,9 +156,9 @@ void DynamicModuleConfigValidator::validate(
   std::vector<envoy_dynamic_module_type_config_validator_resource> abi_resources =
       serializeResources(resources, serialized_resources);
 
-  const bool accepted = config_->on_validate_(
-      static_cast<void*>(config_.get()), config_->in_module_config_, makeEnvoyBuffer(type_url_),
-      abi_resources.data(), abi_resources.size());
+  const bool accepted =
+      config_->on_validate_(static_cast<void*>(config_.get()), config_->in_module_config_,
+                            makeEnvoyBuffer(type_url_), abi_resources.data(), abi_resources.size());
   maybeThrowRejection(*config_, type_url_, accepted);
 }
 

@@ -16,7 +16,6 @@
 #include "test/test_common/utility.h"
 
 #include "absl/strings/str_cat.h"
-
 #include "gtest/gtest.h"
 
 using testing::AssertionResult;
@@ -120,9 +119,9 @@ public:
 
       Protobuf::StringValue required_cluster;
       required_cluster.set_value("cluster_0");
-      config.mutable_extension_config()->PackFrom(required_cluster);
+      std::ignore = config.mutable_extension_config()->PackFrom(required_cluster);
 
-      config_validator_config->mutable_typed_config()->PackFrom(config);
+      std::ignore = config_validator_config->mutable_typed_config()->PackFrom(config);
       config_validator_config->set_name("envoy.config.validators.dynamic_modules");
     });
   }
@@ -132,7 +131,7 @@ public:
 };
 
 INSTANTIATE_TEST_SUITE_P(IpVersionsClientTypeDelta, DynamicModuleConfigValidatorIntegrationTest,
-                         DELTA_SOTW_GRPC_CLIENT_INTEGRATION_PARAMS);
+                         DELTA_SOTW_UNIFIED_GRPC_CLIENT_INTEGRATION_PARAMS);
 
 TEST_P(DynamicModuleConfigValidatorIntegrationTest, RemoveRequiredClusterRejected) {
   addValidator();
@@ -151,8 +150,7 @@ TEST_P(DynamicModuleConfigValidatorIntegrationTest, RemoveRequiredClusterRejecte
                                                              {}, {removed_clusters_names}, "8");
 
   const std::string expected_rejection =
-      sotwOrDelta() == Grpc::SotwOrDelta::Sotw ||
-              sotwOrDelta() == Grpc::SotwOrDelta::UnifiedSotw
+      sotwOrDelta() == Grpc::SotwOrDelta::Sotw || sotwOrDelta() == Grpc::SotwOrDelta::UnifiedSotw
           ? "required cluster 'cluster_0' is absent"
           : "required cluster 'cluster_0' was removed";
   EXPECT_TRUE(compareDiscoveryRequest(Config::TestTypeUrl::get().Cluster, "7", {}, {}, {}, false,

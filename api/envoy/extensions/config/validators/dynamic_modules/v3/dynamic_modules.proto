@@ -49,6 +49,7 @@ message DynamicModuleConfigValidator {
   // The xDS resource type URL handled by this validator.
   //
   // Only updates whose ``DiscoveryResponse.type_url`` or ``DeltaDiscoveryResponse.type_url``
-  // matches this value invoke the dynamic module validator.
+  // matches this value invoke the dynamic module validator. The value must use the canonical
+  // ``type.googleapis.com/<message>`` form.
   string type_url = 4 [(validate.rules).string = {min_len: 1}];
 }

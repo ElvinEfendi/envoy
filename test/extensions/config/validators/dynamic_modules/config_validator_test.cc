@@ -1,8 +1,11 @@
 #include "envoy/config/cluster/v3/cluster.pb.h"
+#include "envoy/config/cluster/v3/cluster.pb.validate.h"
 #include "envoy/extensions/config/validators/dynamic_modules/v3/dynamic_modules.pb.h"
 #include "envoy/registry/registry.h"
+#include "envoy/service/discovery/v3/discovery.pb.h"
 
 #include "source/common/config/decoded_resource_impl.h"
+#include "source/common/config/opaque_resource_decoder_impl.h"
 #include "source/common/config/resource_name.h"
 #include "source/common/protobuf/message_validator_impl.h"
 #include "source/common/protobuf/protobuf.h"
@@ -13,7 +16,6 @@
 #include "test/test_common/utility.h"
 
 #include "absl/strings/string_view.h"
-
 #include "gtest/gtest.h"
 
 namespace Envoy {
@@ -47,7 +49,7 @@ public:
 
     Protobuf::StringValue string_value;
     string_value.set_value("cluster_0");
-    proto_config.mutable_extension_config()->PackFrom(string_value);
+    std::ignore = proto_config.mutable_extension_config()->PackFrom(string_value);
     return proto_config;
   }
 
@@ -64,8 +66,7 @@ public:
 
   static DynamicModuleConfigValidatorProto makeProtoFromRemoteSource(absl::string_view type_url) {
     DynamicModuleConfigValidatorProto proto_config;
-    auto* remote =
-        proto_config.mutable_dynamic_module_config()->mutable_module()->mutable_remote();
+    auto* remote = proto_config.mutable_dynamic_module_config()->mutable_module()->mutable_remote();
     remote->mutable_http_uri()->set_uri("http://example.com/libconfig_validator_test.so");
     remote->mutable_http_uri()->set_cluster("xds_cluster");
     remote->mutable_http_uri()->mutable_timeout()->set_seconds(1);
@@ -77,7 +78,7 @@ public:
 
   static Protobuf::Any pack(const DynamicModuleConfigValidatorProto& proto_config) {
     Protobuf::Any typed_config;
-    typed_config.PackFrom(proto_config);
+    std::ignore = typed_config.PackFrom(proto_config);
     return typed_config;
   }
 
@@ -87,6 +88,16 @@ public:
     cluster->set_name(std::string(name));
     return std::make_unique<Envoy::Config::DecodedResourceImpl>(
         std::move(cluster), std::string(name), std::vector<std::string>{}, std::string(version));
+  }
+
+  static Envoy::Config::DecodedResourcePtr payloadlessClusterResource(absl::string_view name,
+                                                                      absl::string_view version) {
+    Envoy::Config::OpaqueResourceDecoderImpl<envoy::config::cluster::v3::Cluster> decoder(
+        ProtobufMessage::getStrictValidationVisitor(), "name");
+    envoy::service::discovery::v3::Resource resource;
+    resource.set_name(std::string(name));
+    resource.set_version(std::string(version));
+    return std::make_unique<Envoy::Config::DecodedResourceImpl>(decoder, resource);
   }
 
   const std::string cluster_type_url_{
@@ -115,35 +126,51 @@ TEST_F(DynamicModuleConfigValidatorTest, CreateEmptyConfigProto) {
 TEST_F(DynamicModuleConfigValidatorTest, TypeUrlFromConfig) {
   const auto proto_config =
       makeProto("config_validator_test", "required_clusters", cluster_type_url_);
-  EXPECT_EQ(cluster_type_url_, factory_.typeUrl(pack(proto_config),
-                                                ProtobufMessage::getStrictValidationVisitor()));
+  EXPECT_EQ(cluster_type_url_,
+            factory_.typeUrl(pack(proto_config), ProtobufMessage::getStrictValidationVisitor()));
 }
 
 TEST_F(DynamicModuleConfigValidatorTest, InvalidConfigRejected) {
   auto proto_config = makeProto("config_validator_test", "required_clusters", cluster_type_url_);
   proto_config.clear_type_url();
 
-  EXPECT_THROW(
-      factory_.createConfigValidator(pack(proto_config),
-                                     ProtobufMessage::getStrictValidationVisitor()),
-      EnvoyException);
+  EXPECT_THROW(factory_.createConfigValidator(pack(proto_config),
+                                              ProtobufMessage::getStrictValidationVisitor()),
+               EnvoyException);
+}
+
+TEST_F(DynamicModuleConfigValidatorTest, NonCanonicalTypeUrlRejected) {
+  const auto proto_config =
+      makeProto("config_validator_test", "required_clusters", "envoy.config.cluster.v3.Cluster");
+
+  EXPECT_THROW_WITH_REGEX(
+      factory_.typeUrl(pack(proto_config), ProtobufMessage::getStrictValidationVisitor()),
+      EnvoyException, "type_url must use the canonical type.googleapis.com/<message> form");
+}
+
+TEST_F(DynamicModuleConfigValidatorTest, EmptyDescriptorTypeUrlRejected) {
+  const auto proto_config =
+      makeProto("config_validator_test", "required_clusters", "type.googleapis.com/");
+
+  EXPECT_THROW_WITH_REGEX(
+      factory_.typeUrl(pack(proto_config), ProtobufMessage::getStrictValidationVisitor()),
+      EnvoyException, "type_url must use the canonical type.googleapis.com/<message> form");
 }
 
 TEST_F(DynamicModuleConfigValidatorTest, ModuleNotFoundRejected) {
   const auto proto_config =
       makeProto("missing_config_validator_module", "required_clusters", cluster_type_url_);
 
-  EXPECT_THROW_WITH_REGEX(
-      factory_.createConfigValidator(pack(proto_config),
-                                     ProtobufMessage::getStrictValidationVisitor()),
-      EnvoyException, "Failed to load dynamic module");
+  EXPECT_THROW_WITH_REGEX(factory_.createConfigValidator(
+                              pack(proto_config), ProtobufMessage::getStrictValidationVisitor()),
+                          EnvoyException, "Failed to load dynamic module");
 }
 
 TEST_F(DynamicModuleConfigValidatorTest, LocalFilenameModuleSourceSupported) {
   const auto proto_config = makeProtoFromLocalFilename(module_path_, cluster_type_url_);
 
   auto validator = factory_.createConfigValidator(pack(proto_config),
-                                                 ProtobufMessage::getStrictValidationVisitor());
+                                                  ProtobufMessage::getStrictValidationVisitor());
   std::vector<Envoy::Config::DecodedResourcePtr> resources;
 
   EXPECT_NO_THROW(validator->validate(server_, resources));
@@ -152,10 +179,9 @@ TEST_F(DynamicModuleConfigValidatorTest, LocalFilenameModuleSourceSupported) {
 TEST_F(DynamicModuleConfigValidatorTest, RemoteModuleSourceRejected) {
   const auto proto_config = makeProtoFromRemoteSource(cluster_type_url_);
 
-  EXPECT_THROW_WITH_REGEX(
-      factory_.createConfigValidator(pack(proto_config),
-                                     ProtobufMessage::getStrictValidationVisitor()),
-      EnvoyException, "Only local file path module sources are supported");
+  EXPECT_THROW_WITH_REGEX(factory_.createConfigValidator(
+                              pack(proto_config), ProtobufMessage::getStrictValidationVisitor()),
+                          EnvoyException, "Remote module sources require a factory context");
 }
 
 TEST_F(DynamicModuleConfigValidatorTest, MissingSymbolsRejected) {
@@ -165,27 +191,25 @@ TEST_F(DynamicModuleConfigValidatorTest, MissingSymbolsRejected) {
       1);
   const auto proto_config = makeProto("no_op", "required_clusters", cluster_type_url_);
 
-  EXPECT_THROW_WITH_REGEX(
-      factory_.createConfigValidator(pack(proto_config),
-                                     ProtobufMessage::getStrictValidationVisitor()),
-      EnvoyException, "Failed to create dynamic module config validator");
+  EXPECT_THROW_WITH_REGEX(factory_.createConfigValidator(
+                              pack(proto_config), ProtobufMessage::getStrictValidationVisitor()),
+                          EnvoyException, "Failed to create dynamic module config validator");
 }
 
 TEST_F(DynamicModuleConfigValidatorTest, InitFailureRejected) {
   const auto proto_config =
       makeProto("config_validator_test", "unknown_validator", cluster_type_url_);
 
-  EXPECT_THROW_WITH_REGEX(
-      factory_.createConfigValidator(pack(proto_config),
-                                     ProtobufMessage::getStrictValidationVisitor()),
-      EnvoyException, "Failed to create dynamic module config validator");
+  EXPECT_THROW_WITH_REGEX(factory_.createConfigValidator(
+                              pack(proto_config), ProtobufMessage::getStrictValidationVisitor()),
+                          EnvoyException, "Failed to create dynamic module config validator");
 }
 
 TEST_F(DynamicModuleConfigValidatorTest, SotwValidateSuccess) {
   const auto proto_config =
       makeProto("config_validator_test", "required_clusters", cluster_type_url_);
   auto validator = factory_.createConfigValidator(pack(proto_config),
-                                                 ProtobufMessage::getStrictValidationVisitor());
+                                                  ProtobufMessage::getStrictValidationVisitor());
 
   std::vector<Envoy::Config::DecodedResourcePtr> resources;
   resources.push_back(clusterResource("cluster_0", "version_0"));
@@ -194,11 +218,41 @@ TEST_F(DynamicModuleConfigValidatorTest, SotwValidateSuccess) {
   EXPECT_NO_THROW(validator->validate(server_, resources));
 }
 
+TEST_F(DynamicModuleConfigValidatorTest, SotwPayloadlessResourcePreservesPresence) {
+  const auto proto_config =
+      makeProto("config_validator_test", "required_clusters", cluster_type_url_);
+  auto validator = factory_.createConfigValidator(pack(proto_config),
+                                                  ProtobufMessage::getStrictValidationVisitor());
+
+  std::vector<Envoy::Config::DecodedResourcePtr> resources;
+  resources.push_back(payloadlessClusterResource("cluster_0", "version_0"));
+
+  EXPECT_NO_THROW(validator->validate(server_, resources));
+}
+
+TEST_F(DynamicModuleConfigValidatorTest, ResourcePayloadPresenceCrossesAbi) {
+  const auto proto_config =
+      makeProto("config_validator_test", "resource_presence", cluster_type_url_);
+  auto validator = factory_.createConfigValidator(pack(proto_config),
+                                                  ProtobufMessage::getStrictValidationVisitor());
+
+  std::vector<Envoy::Config::DecodedResourcePtr> resources;
+  resources.push_back(clusterResource("cluster_present", "version_0"));
+  resources.push_back(payloadlessClusterResource("cluster_absent", "version_1"));
+  EXPECT_NO_THROW(validator->validate(server_, resources));
+
+  std::vector<Envoy::Config::DecodedResourcePtr> added_resources;
+  added_resources.push_back(clusterResource("cluster_present", "version_0"));
+  added_resources.push_back(payloadlessClusterResource("cluster_absent", "version_1"));
+  Protobuf::RepeatedPtrField<std::string> removed_resources;
+  EXPECT_NO_THROW(validator->validate(server_, added_resources, removed_resources));
+}
+
 TEST_F(DynamicModuleConfigValidatorTest, SotwValidateRejection) {
   const auto proto_config =
       makeProto("config_validator_test", "required_clusters", cluster_type_url_);
   auto validator = factory_.createConfigValidator(pack(proto_config),
-                                                 ProtobufMessage::getStrictValidationVisitor());
+                                                  ProtobufMessage::getStrictValidationVisitor());
 
   std::vector<Envoy::Config::DecodedResourcePtr> resources;
   resources.push_back(clusterResource("cluster_1", "version_0"));
@@ -211,7 +265,7 @@ TEST_F(DynamicModuleConfigValidatorTest, DeltaValidateSuccess) {
   const auto proto_config =
       makeProto("config_validator_test", "required_clusters", cluster_type_url_);
   auto validator = factory_.createConfigValidator(pack(proto_config),
-                                                 ProtobufMessage::getStrictValidationVisitor());
+                                                  ProtobufMessage::getStrictValidationVisitor());
 
   std::vector<Envoy::Config::DecodedResourcePtr> added_resources;
   added_resources.push_back(clusterResource("cluster_1", "version_0"));
@@ -224,7 +278,7 @@ TEST_F(DynamicModuleConfigValidatorTest, DeltaValidateSuccess) {
 TEST_F(DynamicModuleConfigValidatorTest, EmptyResourceArraysAccepted) {
   const auto proto_config = makeProto("config_validator_test", "accept_all", cluster_type_url_);
   auto validator = factory_.createConfigValidator(pack(proto_config),
-                                                 ProtobufMessage::getStrictValidationVisitor());
+                                                  ProtobufMessage::getStrictValidationVisitor());
 
   std::vector<Envoy::Config::DecodedResourcePtr> resources;
   EXPECT_NO_THROW(validator->validate(server_, resources));
@@ -238,7 +292,7 @@ TEST_F(DynamicModuleConfigValidatorTest, DeltaValidateRejectionWithRemovedResour
   const auto proto_config =
       makeProto("config_validator_test", "required_clusters", cluster_type_url_);
   auto validator = factory_.createConfigValidator(pack(proto_config),
-                                                 ProtobufMessage::getStrictValidationVisitor());
+                                                  ProtobufMessage::getStrictValidationVisitor());
 
   std::vector<Envoy::Config::DecodedResourcePtr> added_resources;
   Protobuf::RepeatedPtrField<std::string> removed_resources;
@@ -252,7 +306,7 @@ TEST_F(DynamicModuleConfigValidatorTest, EmptyRejectionMessageUsesGenericError) 
   const auto proto_config =
       makeProto("config_validator_test", "empty_rejection_message", cluster_type_url_);
   auto validator = factory_.createConfigValidator(pack(proto_config),
-                                                 ProtobufMessage::getStrictValidationVisitor());
+                                                  ProtobufMessage::getStrictValidationVisitor());
 
   std::vector<Envoy::Config::DecodedResourcePtr> resources;
   resources.push_back(clusterResource("cluster_0", "version_0"));
@@ -265,7 +319,7 @@ TEST_F(DynamicModuleConfigValidatorTest, EmptyRejectionMessageUsesGenericError) 
 TEST_F(DynamicModuleConfigValidatorTest, PanicRejected) {
   const auto proto_config = makeProto("config_validator_test", "panic", cluster_type_url_);
   auto validator = factory_.createConfigValidator(pack(proto_config),
-                                                 ProtobufMessage::getStrictValidationVisitor());
+                                                  ProtobufMessage::getStrictValidationVisitor());
 
   std::vector<Envoy::Config::DecodedResourcePtr> resources;
   resources.push_back(clusterResource("cluster_0", "version_0"));

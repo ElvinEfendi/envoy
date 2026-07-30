@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -11,7 +12,6 @@
 #include "source/extensions/dynamic_modules/dynamic_modules.h"
 
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -35,7 +35,7 @@ public:
   ~DynamicModuleConfigValidatorConfig();
 
   void setRejectionMessage(absl::string_view message);
-  absl::optional<std::string> takeRejectionMessage();
+  std::optional<std::string> takeRejectionMessage();
 
   envoy_dynamic_module_type_config_validator_config_module_ptr in_module_config_{nullptr};
   OnConfigValidatorConfigDestroyType on_config_destroy_{nullptr};
@@ -53,14 +53,13 @@ private:
   // Keep the module owned by the validator config so its destroy callback is still callable from
   // ~DynamicModuleConfigValidatorConfig before the shared object can be closed.
   Envoy::Extensions::DynamicModules::DynamicModulePtr dynamic_module_;
-  absl::optional<std::string> rejection_message_;
+  std::optional<std::string> rejection_message_;
 };
 
 using DynamicModuleConfigValidatorConfigSharedPtr =
     std::shared_ptr<DynamicModuleConfigValidatorConfig>;
 
-absl::StatusOr<DynamicModuleConfigValidatorConfigSharedPtr>
-newDynamicModuleConfigValidatorConfig(
+absl::StatusOr<DynamicModuleConfigValidatorConfigSharedPtr> newDynamicModuleConfigValidatorConfig(
     absl::string_view extension_name, absl::string_view extension_config,
     Envoy::Extensions::DynamicModules::DynamicModulePtr dynamic_module);
 

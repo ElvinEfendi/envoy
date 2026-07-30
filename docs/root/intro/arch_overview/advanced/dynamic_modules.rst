@@ -23,6 +23,7 @@ Currently, dynamic modules are supported at the following extension points:
 
 * As a :ref:`bootstrap extension <envoy_v3_api_msg_extensions.bootstrap.dynamic_modules.v3.DynamicModuleBootstrapExtension>`.
 * As a :ref:`cluster <envoy_v3_api_msg_extensions.clusters.dynamic_modules.v3.ClusterConfig>`.
+* As an :ref:`xDS config validator <envoy_v3_api_msg_extensions.config.validators.dynamic_modules.v3.DynamicModuleConfigValidator>`.
 * As a :ref:`listener filter <envoy_v3_api_msg_extensions.filters.listener.dynamic_modules.v3.DynamicModuleListenerFilter>`.
 * As a :ref:`UDP listener filter <envoy_v3_api_msg_extensions.filters.udp.dynamic_modules.v3.DynamicModuleUdpListenerFilter>`.
 * As an :ref:`access logger <envoy_v3_api_msg_extensions.access_loggers.dynamic_modules.v3.DynamicModuleAccessLog>`.
@@ -103,8 +104,9 @@ The repository is available at `envoyproxy/dynamic-modules-examples <https://git
 Statistics
 ---------------------------
 
-All dynamic-module extension types emit the following statistics in the shared ``dynamic_modules.`` namespace.
-These stats track failures encountered while loading the extension's configuration. Each one is tagged with
+Dynamic-module extension types emit the following statistics in the shared ``dynamic_modules.`` namespace.
+Config validators are created without a factory context and cannot emit these shared counters. For other
+extension types, the counters track failures encountered while loading the extension's configuration. Each one is tagged with
 ``config_name``, set to the configured name of the dynamic-module extension instance — for example the
 :ref:`filter_name
 <envoy_v3_api_field_extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter.filter_name>`

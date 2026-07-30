@@ -23,6 +23,7 @@ envoy_extension_cc_test(
     deps = [
         "//envoy/registry",
         "//source/common/config:decoded_resource_lib",
+        "//source/common/config:opaque_resource_decoder_lib",
         "//source/common/config:resource_name_lib",
         "//source/common/protobuf:message_validator_lib",
         "//source/extensions/config/validators/dynamic_modules:config",
@@ -31,6 +32,7 @@ envoy_extension_cc_test(
         "//test/test_common:utility_lib",
         "@envoy_api//envoy/config/cluster/v3:pkg_cc_proto",
         "@envoy_api//envoy/extensions/config/validators/dynamic_modules/v3:pkg_cc_proto",
+        "@envoy_api//envoy/service/discovery/v3:pkg_cc_proto",
     ],
 )
 

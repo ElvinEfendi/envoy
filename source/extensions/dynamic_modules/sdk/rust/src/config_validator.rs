@@ -19,8 +19,9 @@ pub struct ConfigValidatorResource<'a> {
   pub name: Cow<'a, str>,
   /// The resource version.
   pub version: Cow<'a, str>,
-  /// The serialized protobuf resource bytes.
-  pub resource: &'a [u8],
+  /// The serialized protobuf resource bytes, or `None` when the xDS resource envelope has no
+  /// payload. `Some(&[])` represents a present protobuf message whose serialization is empty.
+  pub resource: Option<&'a [u8]>,
 }
 
 /// Trait implemented by dynamic-module xDS config validators.
@@ -52,12 +53,12 @@ fn resources_from_abi<'a>(
           resource.version.length,
         )
       },
-      resource: unsafe {
+      resource: resource.has_resource.then(|| unsafe {
         crate::ffi_helpers::slice_from_raw_or_empty(
           resource.serialized_resource.ptr as *const u8,
           resource.serialized_resource.length,
         )
-      },
+      }),
     })
     .collect()
 }
@@ -97,7 +98,11 @@ fn set_rejection_message(
   }
 }
 
-fn config_from_ptr<'a>(
+/// # Safety
+///
+/// `config_module_ptr` must be a non-null pointer returned by
+/// [`envoy_dynamic_module_on_config_validator_config_new_impl`] and must remain valid for `'a`.
+unsafe fn config_from_ptr<'a>(
   config_module_ptr: abi::envoy_dynamic_module_type_config_validator_config_module_ptr,
 ) -> &'a dyn ConfigValidatorConfig {
   let raw = config_module_ptr as *const *const dyn ConfigValidatorConfig;
@@ -178,7 +183,7 @@ pub unsafe extern "C" fn envoy_dynamic_module_on_config_validator_validate(
   resources_count: usize,
 ) -> bool {
   catch_unwind(AssertUnwindSafe(|| {
-    let config = config_from_ptr(config_module_ptr);
+    let config = unsafe { config_from_ptr(config_module_ptr) };
     let type_url_str =
       unsafe { crate::ffi_helpers::str_lossy_from_raw(type_url.ptr as *const u8, type_url.length) };
     let abi_resources =
@@ -214,7 +219,7 @@ pub unsafe extern "C" fn envoy_dynamic_module_on_config_validator_validate_delta
   removed_resources_count: usize,
 ) -> bool {
   catch_unwind(AssertUnwindSafe(|| {
-    let config = config_from_ptr(config_module_ptr);
+    let config = unsafe { config_from_ptr(config_module_ptr) };
     let type_url_str =
       unsafe { crate::ffi_helpers::str_lossy_from_raw(type_url.ptr as *const u8, type_url.length) };
     let abi_added_resources = unsafe {
@@ -277,7 +282,7 @@ mod tests {
       assert_eq!(resources.len(), 1);
       assert_eq!(resources[0].name.as_ref(), "cluster_0");
       assert_eq!(resources[0].version.as_ref(), "version_0");
-      assert_eq!(resources[0].resource, b"serialized_cluster");
+      assert_eq!(resources[0].resource, Some(&b"serialized_cluster"[..]));
       if self.reject {
         Err("sotw rejected".to_string())
       } else {
@@ -317,6 +322,7 @@ mod tests {
     name: &'a str,
     version: &'a str,
     resource: &'a [u8],
+    has_resource: bool,
   ) -> abi::envoy_dynamic_module_type_config_validator_resource {
     abi::envoy_dynamic_module_type_config_validator_resource {
       name: abi::envoy_dynamic_module_type_envoy_buffer {
@@ -327,6 +333,7 @@ mod tests {
         ptr: version.as_ptr() as *const _,
         length: version.len(),
       },
+      has_resource,
       serialized_resource: abi::envoy_dynamic_module_type_envoy_buffer {
         ptr: resource.as_ptr() as *const _,
         length: resource.len(),
@@ -340,6 +347,19 @@ mod tests {
       ptr: type_url.as_ptr() as *const _,
       length: type_url.len(),
     }
+  }
+
+  #[test]
+  fn resource_payload_presence_is_preserved() {
+    let present_empty = make_resource("present", "version_0", b"", true);
+    let absent = make_resource("", "version_1", b"", false);
+    let abi_resources = [present_empty, absent];
+
+    let resources = resources_from_abi(&abi_resources);
+
+    assert!(matches!(resources[0].resource, Some(resource) if resource.is_empty()));
+    assert_eq!(resources[1].resource, None);
+    assert_eq!(resources[1].name.as_ref(), "");
   }
 
   #[test]
@@ -400,7 +420,7 @@ mod tests {
 
   #[test]
   fn validate_accept_reject_and_panic() {
-    let resource = make_resource("cluster_0", "version_0", b"serialized_cluster");
+    let resource = make_resource("cluster_0", "version_0", b"serialized_cluster", true);
 
     for (reject, panic, expected) in [
       (false, false, true),
@@ -427,7 +447,7 @@ mod tests {
 
   #[test]
   fn validate_delta_accept_reject_and_panic() {
-    let resource = make_resource("cluster_0", "version_0", b"serialized_cluster");
+    let resource = make_resource("cluster_0", "version_0", b"serialized_cluster", true);
     let removed = "cluster_1";
     let removed_buffer = abi::envoy_dynamic_module_type_envoy_buffer {
       ptr: removed.as_ptr() as *const _,
