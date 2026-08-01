@@ -25,9 +25,12 @@ using OnTracerSpanLogType = decltype(&envoy_dynamic_module_on_tracer_span_log);
 using OnTracerSpanFinishType = decltype(&envoy_dynamic_module_on_tracer_span_finish);
 using OnTracerSpanInjectContextType = decltype(&envoy_dynamic_module_on_tracer_span_inject_context);
 using OnTracerSpanSpawnChildType = decltype(&envoy_dynamic_module_on_tracer_span_spawn_child);
+using OnTracerSpanSpawnChildWithKindType =
+    decltype(&envoy_dynamic_module_on_tracer_span_spawn_child_with_kind);
 using OnTracerSpanSetSampledType = decltype(&envoy_dynamic_module_on_tracer_span_set_sampled);
 using OnTracerSpanUseLocalDecisionType =
     decltype(&envoy_dynamic_module_on_tracer_span_use_local_decision);
+using OnTracerSpanIsRecordingType = decltype(&envoy_dynamic_module_on_tracer_span_is_recording);
 using OnTracerSpanGetBaggageType = decltype(&envoy_dynamic_module_on_tracer_span_get_baggage);
 using OnTracerSpanSetBaggageType = decltype(&envoy_dynamic_module_on_tracer_span_set_baggage);
 using OnTracerSpanGetTraceIdType = decltype(&envoy_dynamic_module_on_tracer_span_get_trace_id);
@@ -69,8 +72,10 @@ public:
   OnTracerSpanFinishType on_span_finish_{nullptr};
   OnTracerSpanInjectContextType on_span_inject_context_{nullptr};
   OnTracerSpanSpawnChildType on_span_spawn_child_{nullptr};
+  OnTracerSpanSpawnChildWithKindType on_span_spawn_child_with_kind_{nullptr};
   OnTracerSpanSetSampledType on_span_set_sampled_{nullptr};
   OnTracerSpanUseLocalDecisionType on_span_use_local_decision_{nullptr};
+  OnTracerSpanIsRecordingType on_span_is_recording_{nullptr};
   OnTracerSpanGetBaggageType on_span_get_baggage_{nullptr};
   OnTracerSpanSetBaggageType on_span_set_baggage_{nullptr};
   OnTracerSpanGetTraceIdType on_span_get_trace_id_{nullptr};

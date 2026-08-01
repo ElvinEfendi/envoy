@@ -72,6 +72,11 @@ public:
    */
   Event::Dispatcher* dispatcher() { return cached_dispatcher_.load(std::memory_order_acquire); }
 
+  // Stream-owned tracing spans used by SDKs that need to retain a span across module callbacks.
+  uint64_t storeChildSpan(Tracing::SpanPtr span);
+  Tracing::Span* childSpan(uint64_t span_id);
+  bool finishChildSpan(uint64_t span_id);
+
   // ----------  Http::DownstreamWatermarkCallbacks  ----------
   void onAboveWriteBufferHighWatermark() override;
   void onBelowWriteBufferLowWatermark() override;
@@ -372,6 +377,8 @@ private:
   // unique identifier. We store the callback objects here to manage their lifetime.
   absl::flat_hash_map<uint64_t, std::unique_ptr<DynamicModuleHttpFilter::HttpStreamCalloutCallback>>
       http_stream_callouts_;
+
+  absl::flat_hash_map<uint64_t, Tracing::SpanPtr> child_spans_;
 
   // Socket options storage for HTTP filters.
   struct StoredSocketOption {

@@ -952,6 +952,56 @@ impl EnvoyHttpFilterConfig for EnvoyHttpFilterConfigImpl {
 #[automock]
 #[allow(clippy::needless_lifetimes)] // Explicit lifetime specifiers are needed for mockall.
 pub trait EnvoyHttpFilter {
+  #[doc(hidden)]
+  fn child_span_is_recording(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+  ) -> bool;
+
+  #[doc(hidden)]
+  fn child_span_set_tag(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    key: &str,
+    value: &str,
+  );
+
+  #[doc(hidden)]
+  fn child_span_set_operation(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    operation: &str,
+  );
+
+  #[doc(hidden)]
+  fn child_span_log(&self, span_id: abi::envoy_dynamic_module_type_http_child_span_id, event: &str);
+
+  #[doc(hidden)]
+  fn child_span_set_sampled(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    sampled: bool,
+  );
+
+  #[doc(hidden)]
+  fn child_span_set_baggage(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    key: &str,
+    value: &str,
+  );
+
+  #[doc(hidden)]
+  fn child_span_spawn_child(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    operation_name: &str,
+    span_kind: SpanKind,
+  ) -> Option<abi::envoy_dynamic_module_type_http_child_span_id>;
+
+  #[doc(hidden)]
+  fn child_span_finish(&self, span_id: abi::envoy_dynamic_module_type_http_child_span_id) -> bool;
+
   /// Get the value of the request header with the given key.
   /// If the header is not found, this returns `None`.
   ///
@@ -1916,9 +1966,20 @@ pub trait EnvoyHttpFilter {
   /// Returns `Some(Box<dyn EnvoyChildSpan>)` if the child span was created successfully,
   /// otherwise returns `None`.
   ///
-  /// The returned child span must be finished by calling [`EnvoyChildSpan::finish`]
-  /// when done. Failing to finish the span will result in incomplete trace data.
-  fn spawn_child_span<'a>(&'a self, operation_name: &str) -> Option<Box<dyn EnvoyChildSpan + 'a>>;
+  /// The returned child span should be finished by calling [`EnvoyChildSpan::finish`] when done.
+  /// Envoy finishes any remaining child spans when the stream is destroyed.
+  fn spawn_child_span(&self, operation_name: &str) -> Option<Box<dyn EnvoyChildSpan>> {
+    self.spawn_child_span_with_kind(operation_name, SpanKind::Client)
+  }
+
+  /// Create a child span with an explicit semantic role.
+  ///
+  /// The returned handle is owned by the HTTP stream and can be stored across module callbacks.
+  fn spawn_child_span_with_kind(
+    &self,
+    operation_name: &str,
+    span_kind: SpanKind,
+  ) -> Option<Box<dyn EnvoyChildSpan>>;
 
   // ------------------- Cluster/Upstream Information methods -------------------------
 
@@ -2027,6 +2088,28 @@ pub trait EnvoyHttpFilter {
   fn clear_route_cluster_cache(&mut self);
 }
 
+/// The semantic role of a child tracing span.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpanKind {
+  Internal,
+  Server,
+  Client,
+  Producer,
+  Consumer,
+}
+
+impl From<SpanKind> for abi::envoy_dynamic_module_type_span_kind {
+  fn from(value: SpanKind) -> Self {
+    match value {
+      SpanKind::Internal => Self::Internal,
+      SpanKind::Server => Self::Server,
+      SpanKind::Client => Self::Client,
+      SpanKind::Producer => Self::Producer,
+      SpanKind::Consumer => Self::Consumer,
+    }
+  }
+}
+
 /// Trait representing a tracing span.
 ///
 /// This trait provides methods to interact with a tracing span, such as setting tags,
@@ -2034,6 +2117,9 @@ pub trait EnvoyHttpFilter {
 ///
 /// The span is managed by Envoy and should not be finished by the module.
 pub trait EnvoySpan {
+  /// Return whether data recorded on this span can be exported.
+  fn is_recording(&self) -> bool;
+
   /// Set a tag on this span.
   ///
   /// Tags are key-value pairs that provide metadata about the span.
@@ -2092,7 +2178,16 @@ pub trait EnvoySpan {
   /// Create a child span with the given operation name.
   ///
   /// The child span must be finished by calling [`EnvoyChildSpan::finish`] when done.
-  fn spawn_child(&self, operation_name: &str) -> Option<Box<dyn EnvoyChildSpan + '_>>;
+  fn spawn_child(&self, operation_name: &str) -> Option<Box<dyn EnvoyChildSpan>> {
+    self.spawn_child_with_kind(operation_name, SpanKind::Client)
+  }
+
+  /// Create a child span with an explicit semantic role.
+  fn spawn_child_with_kind(
+    &self,
+    operation_name: &str,
+    span_kind: SpanKind,
+  ) -> Option<Box<dyn EnvoyChildSpan>>;
 }
 
 /// Implementation of [`EnvoySpan`] that wraps the raw span pointer from Envoy.
@@ -2102,6 +2197,10 @@ struct EnvoySpanImpl {
 }
 
 impl EnvoySpan for EnvoySpanImpl {
+  fn is_recording(&self) -> bool {
+    unsafe { abi::envoy_dynamic_module_callback_http_span_is_recording(self.raw_ptr) }
+  }
+
   fn set_tag(&self, key: &str, value: &str) {
     unsafe {
       abi::envoy_dynamic_module_callback_http_span_set_tag(
@@ -2217,150 +2316,232 @@ impl EnvoySpan for EnvoySpanImpl {
     }
   }
 
-  fn spawn_child(&self, operation_name: &str) -> Option<Box<dyn EnvoyChildSpan + '_>> {
-    let raw_ptr = unsafe {
-      abi::envoy_dynamic_module_callback_http_span_spawn_child(
+  fn spawn_child_with_kind(
+    &self,
+    operation_name: &str,
+    span_kind: SpanKind,
+  ) -> Option<Box<dyn EnvoyChildSpan>> {
+    let span_id = unsafe {
+      abi::envoy_dynamic_module_callback_http_span_create_child(
         self.filter_ptr,
         self.raw_ptr,
         str_to_module_buffer(operation_name),
+        span_kind.into(),
       )
     };
-    if raw_ptr.is_null() {
+    if span_id == 0 {
       None
     } else {
-      Some(Box::new(EnvoyChildSpanImpl {
-        raw_ptr,
-        filter_ptr: self.filter_ptr,
-        finished: false,
-      }))
+      Some(Box::new(EnvoyChildSpanImpl { span_id }))
     }
   }
 }
 
 /// Trait representing a child tracing span created by the module.
 ///
-/// Child spans are owned by the module and must be finished by calling
-/// [`EnvoyChildSpan::finish`] when done.
+/// The handle contains only a stream-owned identifier. Every operation requires the
+/// [`EnvoyHttpFilterSpanContext`] borrowed from a live HTTP filter callback, so retaining a handle
+/// cannot retain or dereference a stale Envoy filter pointer. Child spans should be finished by
+/// calling [`EnvoyChildSpan::finish`] when done; Envoy finishes any remaining spans at stream
+/// teardown.
+#[doc(hidden)]
+pub trait EnvoyHttpFilterSpanContext {
+  fn child_span_is_recording(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+  ) -> bool;
+  fn child_span_set_tag(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    key: &str,
+    value: &str,
+  );
+  fn child_span_set_operation(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    operation: &str,
+  );
+  fn child_span_log(&self, span_id: abi::envoy_dynamic_module_type_http_child_span_id, event: &str);
+  fn child_span_set_sampled(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    sampled: bool,
+  );
+  fn child_span_set_baggage(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    key: &str,
+    value: &str,
+  );
+  fn child_span_spawn_child(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    operation_name: &str,
+    span_kind: SpanKind,
+  ) -> Option<abi::envoy_dynamic_module_type_http_child_span_id>;
+  fn child_span_finish(&self, span_id: abi::envoy_dynamic_module_type_http_child_span_id) -> bool;
+}
+
+impl<T: EnvoyHttpFilter + ?Sized> EnvoyHttpFilterSpanContext for T {
+  fn child_span_is_recording(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+  ) -> bool {
+    EnvoyHttpFilter::child_span_is_recording(self, span_id)
+  }
+
+  fn child_span_set_tag(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    key: &str,
+    value: &str,
+  ) {
+    EnvoyHttpFilter::child_span_set_tag(self, span_id, key, value)
+  }
+
+  fn child_span_set_operation(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    operation: &str,
+  ) {
+    EnvoyHttpFilter::child_span_set_operation(self, span_id, operation)
+  }
+
+  fn child_span_log(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    event: &str,
+  ) {
+    EnvoyHttpFilter::child_span_log(self, span_id, event)
+  }
+
+  fn child_span_set_sampled(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    sampled: bool,
+  ) {
+    EnvoyHttpFilter::child_span_set_sampled(self, span_id, sampled)
+  }
+
+  fn child_span_set_baggage(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    key: &str,
+    value: &str,
+  ) {
+    EnvoyHttpFilter::child_span_set_baggage(self, span_id, key, value)
+  }
+
+  fn child_span_spawn_child(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    operation_name: &str,
+    span_kind: SpanKind,
+  ) -> Option<abi::envoy_dynamic_module_type_http_child_span_id> {
+    EnvoyHttpFilter::child_span_spawn_child(self, span_id, operation_name, span_kind)
+  }
+
+  fn child_span_finish(&self, span_id: abi::envoy_dynamic_module_type_http_child_span_id) -> bool {
+    EnvoyHttpFilter::child_span_finish(self, span_id)
+  }
+}
+
 pub trait EnvoyChildSpan {
+  /// Return whether data recorded on this span can be exported.
+  fn is_recording(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext) -> bool;
+
   /// Set a tag on this span.
-  fn set_tag(&self, key: &str, value: &str);
+  fn set_tag(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext, key: &str, value: &str);
 
   /// Set the operation name on this span.
-  fn set_operation(&self, operation: &str);
+  fn set_operation(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext, operation: &str);
 
   /// Log an event on this span with the current timestamp.
-  fn log(&self, event: &str);
+  fn log(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext, event: &str);
 
   /// Override the sampling decision for this span.
-  fn set_sampled(&self, sampled: bool);
+  fn set_sampled(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext, sampled: bool);
 
   /// Set a baggage value on this span.
-  fn set_baggage(&self, key: &str, value: &str);
+  fn set_baggage(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext, key: &str, value: &str);
 
   /// Create a child span from this span with the given operation name.
-  fn spawn_child(&self, operation_name: &str) -> Option<Box<dyn EnvoyChildSpan + '_>>;
+  fn spawn_child(
+    &self,
+    envoy_filter: &dyn EnvoyHttpFilterSpanContext,
+    operation_name: &str,
+  ) -> Option<Box<dyn EnvoyChildSpan>> {
+    self.spawn_child_with_kind(envoy_filter, operation_name, SpanKind::Client)
+  }
+
+  /// Create a child span with an explicit semantic role.
+  fn spawn_child_with_kind(
+    &self,
+    envoy_filter: &dyn EnvoyHttpFilterSpanContext,
+    operation_name: &str,
+    span_kind: SpanKind,
+  ) -> Option<Box<dyn EnvoyChildSpan>>;
 
   /// Finish and release this span.
   ///
-  /// After calling this method, the span is no longer valid and should not be used.
-  /// Note: This takes `&mut self` instead of `self` to maintain object-safety.
-  /// The implementation should ensure the span is not used after this call.
-  fn finish(&mut self);
+  /// This consumes the handle, preventing safe Rust from using a finished span.
+  ///
+  /// ```compile_fail
+  /// # use envoy_proxy_dynamic_modules_rust_sdk::{EnvoyChildSpan, EnvoyHttpFilterSpanContext};
+  /// fn use_after_finish(
+  ///   span: Box<dyn EnvoyChildSpan>,
+  ///   envoy_filter: &dyn EnvoyHttpFilterSpanContext,
+  /// ) {
+  ///   span.finish(envoy_filter);
+  ///   span.is_recording(envoy_filter); // `span` was consumed.
+  /// }
+  /// ```
+  fn finish(self: Box<Self>, envoy_filter: &dyn EnvoyHttpFilterSpanContext);
 }
 
-/// Implementation of [`EnvoyChildSpan`] that wraps the raw span pointer.
+/// Implementation of [`EnvoyChildSpan`] that wraps a stream-owned span identifier.
 struct EnvoyChildSpanImpl {
-  raw_ptr: abi::envoy_dynamic_module_type_child_span_module_ptr,
-  filter_ptr: abi::envoy_dynamic_module_type_http_filter_envoy_ptr,
-  finished: bool,
+  span_id: abi::envoy_dynamic_module_type_http_child_span_id,
 }
 
 impl EnvoyChildSpan for EnvoyChildSpanImpl {
-  fn set_tag(&self, key: &str, value: &str) {
-    unsafe {
-      abi::envoy_dynamic_module_callback_http_span_set_tag(
-        self.raw_ptr as abi::envoy_dynamic_module_type_span_envoy_ptr,
-        str_to_module_buffer(key),
-        str_to_module_buffer(value),
-      );
-    }
+  fn is_recording(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext) -> bool {
+    envoy_filter.child_span_is_recording(self.span_id)
   }
 
-  fn set_operation(&self, operation: &str) {
-    unsafe {
-      abi::envoy_dynamic_module_callback_http_span_set_operation(
-        self.raw_ptr as abi::envoy_dynamic_module_type_span_envoy_ptr,
-        str_to_module_buffer(operation),
-      );
-    }
+  fn set_tag(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext, key: &str, value: &str) {
+    envoy_filter.child_span_set_tag(self.span_id, key, value);
   }
 
-  fn log(&self, event: &str) {
-    unsafe {
-      abi::envoy_dynamic_module_callback_http_span_log(
-        self.filter_ptr,
-        self.raw_ptr as abi::envoy_dynamic_module_type_span_envoy_ptr,
-        str_to_module_buffer(event),
-      );
-    }
+  fn set_operation(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext, operation: &str) {
+    envoy_filter.child_span_set_operation(self.span_id, operation);
   }
 
-  fn set_sampled(&self, sampled: bool) {
-    unsafe {
-      abi::envoy_dynamic_module_callback_http_span_set_sampled(
-        self.raw_ptr as abi::envoy_dynamic_module_type_span_envoy_ptr,
-        sampled,
-      );
-    }
+  fn log(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext, event: &str) {
+    envoy_filter.child_span_log(self.span_id, event);
   }
 
-  fn set_baggage(&self, key: &str, value: &str) {
-    unsafe {
-      abi::envoy_dynamic_module_callback_http_span_set_baggage(
-        self.raw_ptr as abi::envoy_dynamic_module_type_span_envoy_ptr,
-        str_to_module_buffer(key),
-        str_to_module_buffer(value),
-      );
-    }
+  fn set_sampled(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext, sampled: bool) {
+    envoy_filter.child_span_set_sampled(self.span_id, sampled);
   }
 
-  fn spawn_child(&self, operation_name: &str) -> Option<Box<dyn EnvoyChildSpan + '_>> {
-    let raw_ptr = unsafe {
-      abi::envoy_dynamic_module_callback_http_span_spawn_child(
-        self.filter_ptr,
-        self.raw_ptr as abi::envoy_dynamic_module_type_span_envoy_ptr,
-        str_to_module_buffer(operation_name),
-      )
-    };
-    if raw_ptr.is_null() {
-      None
-    } else {
-      Some(Box::new(EnvoyChildSpanImpl {
-        raw_ptr,
-        filter_ptr: self.filter_ptr,
-        finished: false,
-      }))
-    }
+  fn set_baggage(&self, envoy_filter: &dyn EnvoyHttpFilterSpanContext, key: &str, value: &str) {
+    envoy_filter.child_span_set_baggage(self.span_id, key, value);
   }
 
-  fn finish(&mut self) {
-    if !self.finished {
-      unsafe {
-        abi::envoy_dynamic_module_callback_http_child_span_finish(self.raw_ptr);
-      }
-      self.finished = true;
-    }
+  fn spawn_child_with_kind(
+    &self,
+    envoy_filter: &dyn EnvoyHttpFilterSpanContext,
+    operation_name: &str,
+    span_kind: SpanKind,
+  ) -> Option<Box<dyn EnvoyChildSpan>> {
+    envoy_filter
+      .child_span_spawn_child(self.span_id, operation_name, span_kind)
+      .map(|span_id| Box::new(EnvoyChildSpanImpl { span_id }) as Box<dyn EnvoyChildSpan>)
   }
-}
 
-impl Drop for EnvoyChildSpanImpl {
-  fn drop(&mut self) {
-    // If the span was not explicitly finished, finish it now.
-    if !self.finished {
-      unsafe {
-        abi::envoy_dynamic_module_callback_http_child_span_finish(self.raw_ptr);
-      }
-    }
+  fn finish(self: Box<Self>, envoy_filter: &dyn EnvoyHttpFilterSpanContext) {
+    envoy_filter.child_span_finish(self.span_id);
   }
 }
 
@@ -2373,6 +2554,113 @@ pub struct EnvoyHttpFilterImpl {
 }
 
 impl EnvoyHttpFilter for EnvoyHttpFilterImpl {
+  fn child_span_is_recording(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+  ) -> bool {
+    let span =
+      unsafe { abi::envoy_dynamic_module_callback_http_child_span_get(self.raw_ptr, span_id) };
+    unsafe { abi::envoy_dynamic_module_callback_http_span_is_recording(span) }
+  }
+
+  fn child_span_set_tag(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    key: &str,
+    value: &str,
+  ) {
+    let span =
+      unsafe { abi::envoy_dynamic_module_callback_http_child_span_get(self.raw_ptr, span_id) };
+    unsafe {
+      abi::envoy_dynamic_module_callback_http_span_set_tag(
+        span,
+        str_to_module_buffer(key),
+        str_to_module_buffer(value),
+      )
+    }
+  }
+
+  fn child_span_set_operation(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    operation: &str,
+  ) {
+    let span =
+      unsafe { abi::envoy_dynamic_module_callback_http_child_span_get(self.raw_ptr, span_id) };
+    unsafe {
+      abi::envoy_dynamic_module_callback_http_span_set_operation(
+        span,
+        str_to_module_buffer(operation),
+      )
+    }
+  }
+
+  fn child_span_log(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    event: &str,
+  ) {
+    let span =
+      unsafe { abi::envoy_dynamic_module_callback_http_child_span_get(self.raw_ptr, span_id) };
+    unsafe {
+      abi::envoy_dynamic_module_callback_http_span_log(
+        self.raw_ptr,
+        span,
+        str_to_module_buffer(event),
+      )
+    }
+  }
+
+  fn child_span_set_sampled(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    sampled: bool,
+  ) {
+    let span =
+      unsafe { abi::envoy_dynamic_module_callback_http_child_span_get(self.raw_ptr, span_id) };
+    unsafe { abi::envoy_dynamic_module_callback_http_span_set_sampled(span, sampled) }
+  }
+
+  fn child_span_set_baggage(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    key: &str,
+    value: &str,
+  ) {
+    let span =
+      unsafe { abi::envoy_dynamic_module_callback_http_child_span_get(self.raw_ptr, span_id) };
+    unsafe {
+      abi::envoy_dynamic_module_callback_http_span_set_baggage(
+        span,
+        str_to_module_buffer(key),
+        str_to_module_buffer(value),
+      )
+    }
+  }
+
+  fn child_span_spawn_child(
+    &self,
+    span_id: abi::envoy_dynamic_module_type_http_child_span_id,
+    operation_name: &str,
+    span_kind: SpanKind,
+  ) -> Option<abi::envoy_dynamic_module_type_http_child_span_id> {
+    let child_span_id = unsafe {
+      abi::envoy_dynamic_module_callback_http_child_span_create_child(
+        self.raw_ptr,
+        span_id,
+        str_to_module_buffer(operation_name),
+        span_kind.into(),
+      )
+    };
+    (child_span_id != 0).then_some(child_span_id)
+  }
+
+  fn child_span_finish(&self, span_id: abi::envoy_dynamic_module_type_http_child_span_id) -> bool {
+    unsafe {
+      abi::envoy_dynamic_module_callback_http_child_span_finish_by_id(self.raw_ptr, span_id)
+    }
+  }
+
   fn get_request_header_value(&self, key: &str) -> Option<EnvoyBuffer<'_>> {
     self.get_header_value_impl(
       key,
@@ -3873,28 +4161,29 @@ impl EnvoyHttpFilter for EnvoyHttpFilterImpl {
     }
   }
 
-  fn spawn_child_span<'a>(&'a self, operation_name: &str) -> Option<Box<dyn EnvoyChildSpan + 'a>> {
+  fn spawn_child_span_with_kind(
+    &self,
+    operation_name: &str,
+    span_kind: SpanKind,
+  ) -> Option<Box<dyn EnvoyChildSpan>> {
     // Get the active span pointer directly.
     let span_ptr = unsafe { abi::envoy_dynamic_module_callback_http_get_active_span(self.raw_ptr) };
     if span_ptr.is_null() {
       return None;
     }
     // Spawn the child span directly from the raw pointer.
-    let raw_ptr = unsafe {
-      abi::envoy_dynamic_module_callback_http_span_spawn_child(
+    let span_id = unsafe {
+      abi::envoy_dynamic_module_callback_http_span_create_child(
         self.raw_ptr,
         span_ptr,
         str_to_module_buffer(operation_name),
+        span_kind.into(),
       )
     };
-    if raw_ptr.is_null() {
+    if span_id == 0 {
       None
     } else {
-      Some(Box::new(EnvoyChildSpanImpl {
-        raw_ptr,
-        filter_ptr: self.raw_ptr,
-        finished: false,
-      }))
+      Some(Box::new(EnvoyChildSpanImpl { span_id }))
     }
   }
 

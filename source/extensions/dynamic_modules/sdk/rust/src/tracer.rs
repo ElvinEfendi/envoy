@@ -351,11 +351,26 @@ pub trait TracerSpan: Send {
   /// Create a child span from this span.
   fn spawn_child(&mut self, name: &str, start_time_ns: i64) -> Option<Box<dyn TracerSpan>>;
 
+  /// Create a child span with an explicit semantic role.
+  fn spawn_child_with_kind(
+    &mut self,
+    name: &str,
+    start_time_ns: i64,
+    _span_kind: TracerSpanKind,
+  ) -> Option<Box<dyn TracerSpan>> {
+    self.spawn_child(name, start_time_ns)
+  }
+
   /// Override the sampling decision for this span.
   fn set_sampled(&mut self, sampled: bool);
 
   /// Whether this span uses Envoy's local sampling decision.
   fn use_local_decision(&self) -> bool {
+    true
+  }
+
+  /// Whether data recorded on this span can be exported.
+  fn is_recording(&self) -> bool {
     true
   }
 
@@ -375,6 +390,28 @@ pub trait TracerSpan: Send {
   /// Get the span ID for this span.
   fn get_span_id(&self) -> Option<String> {
     None
+  }
+}
+
+/// The semantic role of a span created by a dynamic tracer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TracerSpanKind {
+  Internal,
+  Server,
+  Client,
+  Producer,
+  Consumer,
+}
+
+impl From<abi::envoy_dynamic_module_type_span_kind> for TracerSpanKind {
+  fn from(value: abi::envoy_dynamic_module_type_span_kind) -> Self {
+    match value {
+      abi::envoy_dynamic_module_type_span_kind::Internal => Self::Internal,
+      abi::envoy_dynamic_module_type_span_kind::Server => Self::Server,
+      abi::envoy_dynamic_module_type_span_kind::Client => Self::Client,
+      abi::envoy_dynamic_module_type_span_kind::Producer => Self::Producer,
+      abi::envoy_dynamic_module_type_span_kind::Consumer => Self::Consumer,
+    }
   }
 }
 
@@ -778,6 +815,43 @@ pub unsafe extern "C" fn envoy_dynamic_module_on_tracer_span_spawn_child(
 /// This is an FFI function called by Envoy. All pointer arguments must be valid as guaranteed
 /// by the Envoy dynamic module ABI.
 #[no_mangle]
+pub unsafe extern "C" fn envoy_dynamic_module_on_tracer_span_spawn_child_with_kind(
+  span_module_ptr: abi::envoy_dynamic_module_type_tracer_span_module_ptr,
+  name: abi::envoy_dynamic_module_type_envoy_buffer,
+  start_time_ns: i64,
+  span_kind: abi::envoy_dynamic_module_type_span_kind,
+) -> abi::envoy_dynamic_module_type_tracer_span_module_ptr {
+  let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let wrapper = unsafe { &mut *(span_module_ptr as *mut SpanWrapper) };
+    let n = unsafe { envoy_buffer_to_str(name) };
+    match wrapper
+      .inner
+      .spawn_child_with_kind(n.as_ref(), start_time_ns, span_kind.into())
+    {
+      Some(child) => {
+        let child_wrapper = SpanWrapper::new(child);
+        wrap_into_c_void_ptr!(child_wrapper)
+      },
+      None => std::ptr::null(),
+    }
+  }));
+  match result {
+    Ok(ptr) => ptr,
+    Err(panic) => {
+      crate::log_ffi_panic(
+        "envoy_dynamic_module_on_tracer_span_spawn_child_with_kind",
+        panic,
+      );
+      std::ptr::null()
+    },
+  }
+}
+
+/// # Safety
+///
+/// This is an FFI function called by Envoy. All pointer arguments must be valid as guaranteed
+/// by the Envoy dynamic module ABI.
+#[no_mangle]
 pub unsafe extern "C" fn envoy_dynamic_module_on_tracer_span_set_sampled(
   span_module_ptr: abi::envoy_dynamic_module_type_tracer_span_module_ptr,
   sampled: bool,
@@ -801,6 +875,20 @@ pub unsafe extern "C" fn envoy_dynamic_module_on_tracer_span_use_local_decision(
     wrapper.inner.use_local_decision()
   }));
   result.unwrap_or(true)
+}
+
+/// # Safety
+///
+/// This is an FFI function called by Envoy. `span_module_ptr` must point to a valid span wrapper.
+#[no_mangle]
+pub unsafe extern "C" fn envoy_dynamic_module_on_tracer_span_is_recording(
+  span_module_ptr: abi::envoy_dynamic_module_type_tracer_span_module_ptr,
+) -> bool {
+  std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let wrapper = unsafe { &*(span_module_ptr as *const SpanWrapper) };
+    wrapper.inner.is_recording()
+  }))
+  .unwrap_or(false)
 }
 
 /// # Safety

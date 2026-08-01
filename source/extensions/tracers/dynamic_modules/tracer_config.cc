@@ -79,9 +79,20 @@ absl::StatusOr<DynamicModuleTracerConfigSharedPtr> newDynamicModuleTracerConfig(
   RESOLVE_OR_RETURN(on_span_finish_, "envoy_dynamic_module_on_tracer_span_finish");
   RESOLVE_OR_RETURN(on_span_inject_context_, "envoy_dynamic_module_on_tracer_span_inject_context");
   RESOLVE_OR_RETURN(on_span_spawn_child_, "envoy_dynamic_module_on_tracer_span_spawn_child");
+  auto spawn_child_with_kind =
+      config->dynamic_module_->getFunctionPointer<OnTracerSpanSpawnChildWithKindType>(
+          "envoy_dynamic_module_on_tracer_span_spawn_child_with_kind");
+  if (spawn_child_with_kind.ok()) {
+    config->on_span_spawn_child_with_kind_ = spawn_child_with_kind.value();
+  }
   RESOLVE_OR_RETURN(on_span_set_sampled_, "envoy_dynamic_module_on_tracer_span_set_sampled");
   RESOLVE_OR_RETURN(on_span_use_local_decision_,
                     "envoy_dynamic_module_on_tracer_span_use_local_decision");
+  auto is_recording = config->dynamic_module_->getFunctionPointer<OnTracerSpanIsRecordingType>(
+      "envoy_dynamic_module_on_tracer_span_is_recording");
+  if (is_recording.ok()) {
+    config->on_span_is_recording_ = is_recording.value();
+  }
   RESOLVE_OR_RETURN(on_span_get_baggage_, "envoy_dynamic_module_on_tracer_span_get_baggage");
   RESOLVE_OR_RETURN(on_span_set_baggage_, "envoy_dynamic_module_on_tracer_span_set_baggage");
   RESOLVE_OR_RETURN(on_span_get_trace_id_, "envoy_dynamic_module_on_tracer_span_get_trace_id");
@@ -144,8 +155,8 @@ void DynamicModuleSpan::log(SystemTime timestamp, const std::string& event) {
 }
 
 bool DynamicModuleSpan::exportedSpan() const {
-  // TODO(jkoch): extend module ABI with hook as an optimization
-  return true;
+  return config_->on_span_is_recording_ == nullptr ||
+         config_->on_span_is_recording_(in_module_span_);
 }
 
 void DynamicModuleSpan::finishSpan() { config_->on_span_finish_(in_module_span_); }
@@ -159,13 +170,37 @@ void DynamicModuleSpan::injectContext(Tracing::TraceContext& trace_context,
   trace_context_ = prev;
 }
 
-Tracing::SpanPtr DynamicModuleSpan::spawnChild(const Tracing::Config&, const std::string& name,
-                                               SystemTime start_time) {
+Tracing::SpanPtr DynamicModuleSpan::spawnChild(const Tracing::Config& tracing_config,
+                                               const std::string& name, SystemTime start_time) {
   const int64_t start_time_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(start_time.time_since_epoch()).count();
   envoy_dynamic_module_type_envoy_buffer name_buf = {.ptr = const_cast<char*>(name.data()),
                                                      .length = name.size()};
-  auto child_module_span = config_->on_span_spawn_child_(in_module_span_, name_buf, start_time_ns);
+  envoy_dynamic_module_type_tracer_span_module_ptr child_module_span;
+  if (config_->on_span_spawn_child_with_kind_ == nullptr) {
+    child_module_span = config_->on_span_spawn_child_(in_module_span_, name_buf, start_time_ns);
+  } else {
+    envoy_dynamic_module_type_span_kind span_kind;
+    switch (tracing_config.spanKind()) {
+    case Tracing::SpanKind::Internal:
+      span_kind = envoy_dynamic_module_type_span_kind_Internal;
+      break;
+    case Tracing::SpanKind::Server:
+      span_kind = envoy_dynamic_module_type_span_kind_Server;
+      break;
+    case Tracing::SpanKind::Client:
+      span_kind = envoy_dynamic_module_type_span_kind_Client;
+      break;
+    case Tracing::SpanKind::Producer:
+      span_kind = envoy_dynamic_module_type_span_kind_Producer;
+      break;
+    case Tracing::SpanKind::Consumer:
+      span_kind = envoy_dynamic_module_type_span_kind_Consumer;
+      break;
+    }
+    child_module_span = config_->on_span_spawn_child_with_kind_(in_module_span_, name_buf,
+                                                                start_time_ns, span_kind);
+  }
   if (child_module_span == nullptr) {
     return std::make_unique<Tracing::NullSpan>();
   }

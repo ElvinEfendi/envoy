@@ -73,13 +73,30 @@ Span::Span(const std::string& name, const StreamInfo::StreamInfo& stream_info,
   span_.set_start_time_unix_nano(std::chrono::nanoseconds(start_time.time_since_epoch()).count());
 }
 
-Tracing::SpanPtr Span::spawnChild(const Tracing::Config&, const std::string& name,
+Tracing::SpanPtr Span::spawnChild(const Tracing::Config& config, const std::string& name,
                                   SystemTime start_time) {
   // Build span_context from the current span, then generate the child span from that context.
   SpanContext span_context(kDefaultVersion, getTraceId(), spanId(), sampled(),
                            std::string(tracestate()));
-  return parent_tracer_.startSpan(name, stream_info_, start_time, span_context, {},
-                                  ::opentelemetry::proto::trace::v1::Span::SPAN_KIND_CLIENT);
+  OTelSpanKind span_kind;
+  switch (config.spanKind()) {
+  case Tracing::SpanKind::Internal:
+    span_kind = ::opentelemetry::proto::trace::v1::Span::SPAN_KIND_INTERNAL;
+    break;
+  case Tracing::SpanKind::Server:
+    span_kind = ::opentelemetry::proto::trace::v1::Span::SPAN_KIND_SERVER;
+    break;
+  case Tracing::SpanKind::Client:
+    span_kind = ::opentelemetry::proto::trace::v1::Span::SPAN_KIND_CLIENT;
+    break;
+  case Tracing::SpanKind::Producer:
+    span_kind = ::opentelemetry::proto::trace::v1::Span::SPAN_KIND_PRODUCER;
+    break;
+  case Tracing::SpanKind::Consumer:
+    span_kind = ::opentelemetry::proto::trace::v1::Span::SPAN_KIND_CONSUMER;
+    break;
+  }
+  return parent_tracer_.startSpan(name, stream_info_, start_time, span_context, {}, span_kind);
 }
 
 void Span::finishSpan() {

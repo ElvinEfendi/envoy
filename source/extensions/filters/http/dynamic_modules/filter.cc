@@ -10,7 +10,38 @@ namespace Extensions {
 namespace DynamicModules {
 namespace HttpFilters {
 
+namespace {
+std::atomic<uint64_t> next_child_span_id{1}; // 0 is reserved as an invalid id.
+}
+
 DynamicModuleHttpFilter::~DynamicModuleHttpFilter() { destroy(); }
+
+uint64_t DynamicModuleHttpFilter::storeChildSpan(Tracing::SpanPtr span) {
+  if (span == nullptr) {
+    return 0;
+  }
+  uint64_t span_id = next_child_span_id.fetch_add(1, std::memory_order_relaxed);
+  if (span_id == 0) {
+    span_id = next_child_span_id.fetch_add(1, std::memory_order_relaxed);
+  }
+  child_spans_.emplace(span_id, std::move(span));
+  return span_id;
+}
+
+Tracing::Span* DynamicModuleHttpFilter::childSpan(uint64_t span_id) {
+  const auto it = child_spans_.find(span_id);
+  return it == child_spans_.end() ? nullptr : it->second.get();
+}
+
+bool DynamicModuleHttpFilter::finishChildSpan(uint64_t span_id) {
+  const auto it = child_spans_.find(span_id);
+  if (it == child_spans_.end()) {
+    return false;
+  }
+  it->second->finishSpan();
+  child_spans_.erase(it);
+  return true;
+}
 
 void DynamicModuleHttpFilter::initializeInModuleFilter() {
   ASSERT(in_module_filter_ == nullptr);
@@ -46,11 +77,20 @@ void DynamicModuleHttpFilter::onDestroy() {
 
 void DynamicModuleHttpFilter::destroy() {
   if (in_module_filter_ == nullptr) {
+    while (!child_spans_.empty()) {
+      finishChildSpan(child_spans_.begin()->first);
+    }
     return;
   }
 
   config_->on_http_filter_destroy_(in_module_filter_);
   in_module_filter_ = nullptr;
+
+  // The module has released its span handles. Finish any handles it leaked before this stream and
+  // its active span are destroyed.
+  while (!child_spans_.empty()) {
+    finishChildSpan(child_spans_.begin()->first);
+  }
 
   // Cancel all pending one-shot callouts.
   while (!http_callouts_.empty()) {
