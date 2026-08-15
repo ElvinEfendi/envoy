@@ -271,6 +271,7 @@
 # Key Value store
 /*/extensions/key_value @abeyad @ryantheoptimist
 # Config Validators
+/*/extensions/config/validators/dynamic_modules @agrawroh @mathetake @wbpcode @adisuissa @yanavlasov
 /*/extensions/config/validators/minimum_clusters @adisuissa @yanavlasov
 # File system based extensions
 /*/extensions/common/async_files @mattklein123 @ravenblackx
