@@ -120,9 +120,13 @@ envoy_cc_test(
     deps = [
         "//envoy/registry",
         "//source/common/router:string_accessor_lib",
+        "//source/common/stats:allocator_lib",
+        "//source/common/stats:stats_matcher_lib",
+        "//source/common/stats:thread_local_store_lib",
         "//source/extensions/dynamic_modules:abi_impl",
         "//source/extensions/filters/http/dynamic_modules:abi_impl",
         "//source/extensions/filters/http/dynamic_modules:filter_lib",
+        "//test/common/memory:memory_test_utility_lib",
         "//test/common/stats:stat_test_utility_lib",
         "//test/extensions/dynamic_modules:util",
         "//test/mocks/event:event_mocks",

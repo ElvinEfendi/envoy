@@ -27,7 +27,7 @@ class DynamicModuleHttpFilter : public Http::StreamFilter,
 public:
   DynamicModuleHttpFilter(DynamicModuleHttpFilterConfigSharedPtr config,
                           Stats::SymbolTable& symbol_table, uint32_t worker_index)
-      : config_(config), stat_name_pool_(symbol_table), worker_index_(worker_index) {}
+      : config_(config), symbol_table_(symbol_table), worker_index_(worker_index) {}
   ~DynamicModuleHttpFilter() override;
 
   /**
@@ -248,7 +248,7 @@ public:
   bool hasConfig() const { return config_ != nullptr; }
   const DynamicModuleHttpFilterConfig& getFilterConfig() const { return *config_; }
   const DynamicModuleHttpFilterConfigSharedPtr& getFilterConfigSharedPtr() const { return config_; }
-  Stats::StatNameDynamicPool& getStatNamePool() { return stat_name_pool_; }
+  Stats::SymbolTable& symbolTable() { return symbol_table_; }
 
   /**
    * Returns the worker index assigned to this filter.
@@ -293,7 +293,7 @@ private:
 
   const DynamicModuleHttpFilterConfigSharedPtr config_ = nullptr;
   envoy_dynamic_module_type_http_filter_module_ptr in_module_filter_ = nullptr;
-  Stats::StatNameDynamicPool stat_name_pool_;
+  Stats::SymbolTable& symbol_table_;
   uint32_t worker_index_;
   // Tracks whether addDownstreamWatermarkCallbacks() has been invoked on decoder_callbacks_.
   // Also gates the paired remove in onDestroy(), because removeDownstreamWatermarkCallbacks()
